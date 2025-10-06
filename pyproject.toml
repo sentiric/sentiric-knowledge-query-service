@@ -1,0 +1,34 @@
+[tool.poetry]
+name = "sentiric-knowledge-query-service"
+version = "0.1.0"
+description = "Retrieval Augmented Generation (RAG) Query Service for vector database lookups (Qdrant)."
+authors = ["Sentiric Team"]
+license = "Apache-2.0"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.111.0"
+uvicorn = {extras = ["standard"], version = "^0.30.1"}
+pydantic = "^2.7.3"
+pydantic-settings = "^2.3.4"
+python-dotenv = "^1.0.1"
+structlog = "^24.2.0"
+grpcio = "^1.64.1"
+
+# Vector DB İstemcisi
+qdrant-client = "^1.9.0"
+# Vektörleştirmek için hafif modelleyici (Bu servis query yapar)
+sentence-transformers = "^2.7.0"
+# Güvenlik ve API çağrıları
+httpx = "^0.27.0" 
+
+# Protobuf stubs
+sentiric-contracts = { git = "https://github.com/sentiric/sentiric-contracts.git", tag = "v1.9.0" }
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
