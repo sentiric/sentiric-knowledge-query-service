@@ -16,15 +16,18 @@ python-dotenv = "^1.0.1"
 structlog = "^24.2.0"
 grpcio = "^1.64.1"
 
-# Vector DB İstemcisi
+# Vector DB İstemcisi (Protobuf ile uyumlu olduğundan emin olunmalı)
 qdrant-client = "^1.9.0"
 # Vektörleştirmek için hafif modelleyici (Bu servis query yapar)
 sentence-transformers = "^2.7.0"
 # Güvenlik ve API çağrıları
 httpx = "^0.27.0" 
 
-# Protobuf stubs
-sentiric-contracts = { git = "https://github.com/sentiric/sentiric-contracts.git", tag = "v1.9.0" }
+# KRİTİK ZORLAMA: Platform standardı Protobuf 6.x'i koru
+protobuf = "^6.32.0"
+
+# Protobuf stubs (Adı düzeltildi)
+sentiric-contracts-py = { git = "https://github.com/sentiric/sentiric-contracts.git", tag = "v1.9.0" }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2.2"

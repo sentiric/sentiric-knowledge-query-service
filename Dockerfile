@@ -25,7 +25,7 @@ COPY app ./app
 COPY README.md .
 
 # Bağımlılıkları kur
-RUN poetry install --no-root --no-dev
+RUN poetry install --no-root --only main
 
 # --- STAGE 2: Production ---
 FROM python:3.11-slim-bullseye
