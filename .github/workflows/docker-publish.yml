@@ -98,4 +98,4 @@ jobs:
             ghcr.io/${{ env.SERVICE_NAME }}:${{ env.SERVICE_VERSION }}-gpu
           build-args: |
             SERVICE_VERSION=${{ env.SERVICE_VERSION }}
-            TORCH_INDEX_URL= # Boş bırakarak standart (CUDA'lı) kurulumu tetikle
+            TORCH_INDEX_URL=
