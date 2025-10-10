@@ -1,7 +1,7 @@
 # --- STAGE 1: Builder ---
 FROM python:3.11-slim-bullseye AS builder
 
-# Gerekli sistem bağımlılıkları (sentence-transformers için)
+# Gerekli sistem bağımlılıkları
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     build-essential \
@@ -9,8 +9,12 @@ RUN apt-get update && \
     git && \
     rm -rf /var/lib/apt/lists/*
 
-# Poetry kurulumu
-RUN pip install poetry
+# *** 💡 DEĞİŞİKLİK 1: Poetry versiyonunu sabitle 💡 ***
+# Yerel ortamla tam uyumluluk için.
+RUN pip install poetry==2.2.1
+
+# *** 💡 DEĞİŞİKLİK 2: Poetry'nin sanal ortam oluşturmasını engelle 💡 ***
+RUN poetry config virtualenvs.create false
 
 # Build argümanlarını tanımla
 ARG GIT_COMMIT="unknown"
@@ -19,13 +23,16 @@ ARG SERVICE_VERSION="0.0.0"
 
 WORKDIR /app
 
-# Proje dosyalarını kopyala
-COPY pyproject.toml ./
+# ÖNCE lock ve toml dosyalarını kopyala (Docker katman önbelleklemesi için)
+COPY pyproject.toml poetry.lock ./
+
+# Bağımlılıkları kur (artık sisteme kurulacaklar)
+RUN poetry install --no-interaction --no-ansi --no-root
+
+# Sonra uygulamanın geri kalanını kopyala
 COPY app ./app
 COPY README.md .
 
-# Bağımlılıkları kur
-RUN poetry install --no-root --only main
 
 # --- STAGE 2: Production ---
 FROM python:3.11-slim-bullseye
@@ -50,7 +57,6 @@ COPY --from=builder /app/app ./app
 # Dosya sahipliğini yeni kullanıcıya ver
 RUN chown -R appuser:appuser /app
 
-# YENİ: Build argümanlarını environment değişkenlerine ata
 ARG GIT_COMMIT
 ARG BUILD_DATE
 ARG SERVICE_VERSION
@@ -60,5 +66,5 @@ ENV SERVICE_VERSION=${SERVICE_VERSION}
 
 USER appuser
 
-# Başlangıç komutu: Query Servisi HTTP/gRPC'de 12041'de dinleyecektir (Harmony Port)
+# Başlangıç komutu
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "12041"]
