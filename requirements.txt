@@ -1,4 +1,8 @@
-# requirements.txt - v3 letting pip resolve conflicts
+# requirements.txt - v5 Generic for flexible builds
+
+# Core ML dependencies (specific version will be decided at build time)
+torch
+sentence-transformers
 
 # Core Framework
 fastapi
@@ -12,17 +16,14 @@ python-dotenv
 # Logging
 structlog
 
-# gRPC (version will be resolved by pip)
+# gRPC
 grpcio
 
 # Vector DB Client
 qdrant-client
 
-# Embedding Model
-sentence-transformers
-
 # HTTP Client
 httpx
 
-# Git-based dependency for Contracts (pointing to the fixed main branch)
+# Git-based dependency for Contracts
 sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@main

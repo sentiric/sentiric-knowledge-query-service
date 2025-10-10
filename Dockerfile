@@ -1,16 +1,16 @@
-# Dockerfile - v3 FINAL - Optimized with Multi-Stage Build
+# Dockerfile - v4 FINAL - Flexible CPU/GPU builds with Multi-Stage
 
 # ==============================================================================
 # STAGE 1: Builder
-# Bu aşamada tüm ağır işler yapılır: derleme, paket indirme vs.
 # ==============================================================================
 FROM python:3.11-slim-bullseye AS builder
 
+# Build argümanını en başta tanımla
+ARG TORCH_INDEX_URL
+
 WORKDIR /app
 
-# Sistem bağımlılıklarını kur
-# git: Git bağımlılıkları için
-# build-essential: C++ derlemesi gerektiren paketler için (torch, tokenizers vs.)
+# Sistem bağımlılıkları
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     build-essential && \
@@ -20,25 +20,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # requirements.txt dosyasını kopyala
 COPY requirements.txt .
 
-# Sanal bir ortam oluşturup paketleri buraya kuracağız.
-# Bu, sadece gereken dosyaları bir sonraki aşamaya taşımayı kolaylaştırır.
+# Sanal ortam oluştur
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# pip'i güncelleyip paketleri kuralım
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# pip'i güncelle
+RUN pip install --upgrade pip
+
+# *** 💡 AKILLI KURULUM BURADA 💡 ***
+# requirements.txt'deki torch'u kur, ama build argümanıyla gelen
+# özel index'i kullanarak (eğer varsa).
+RUN pip install --no-cache-dir -r requirements.txt ${TORCH_INDEX_URL}
 
 
 # ==============================================================================
 # STAGE 2: Final Image
-# Bu aşama, sadece uygulamanın çalışması için gerekenleri içerir. Küçük ve güvenli.
 # ==============================================================================
 FROM python:3.11-slim-bullseye
 
 WORKDIR /app
 
-# Sadece RUNTIME için gereken sistem kütüphanelerini kur. Derleyiciler yok!
+# Sadece runtime için gereken sistem kütüphaneleri
 RUN apt-get update && apt-get install -y --no-install-recommends \
     netcat-openbsd \
     curl \
@@ -47,16 +49,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Güvenlik için non-root kullanıcı oluştur
+# Non-root kullanıcı
 RUN useradd --create-home --shell /bin/bash --uid 1001 appuser
 
-# Builder aşamasından SADECE kurulu paketleri (sanal ortamı) kopyala
+# Builder'dan sanal ortamı kopyala
 COPY --chown=appuser:appuser --from=builder /opt/venv /opt/venv
 
 # Uygulama kodunu kopyala
 COPY --chown=appuser:appuser app ./app
 
-# Ortam değişkenlerini ayarla
+# Ortam değişkenleri
 ARG GIT_COMMIT
 ARG BUILD_DATE
 ARG SERVICE_VERSION
@@ -64,11 +66,9 @@ ENV GIT_COMMIT=${GIT_COMMIT}
 ENV BUILD_DATE=${BUILD_DATE}
 ENV SERVICE_VERSION=${SERVICE_VERSION}
 
-# Sanal ortamın PATH'ini aktif hale getir
+# Sanal ortamı PATH'e ekle
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Kullanıcıyı değiştir
 USER appuser
 
-# Uygulamayı çalıştır
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "12401"]
