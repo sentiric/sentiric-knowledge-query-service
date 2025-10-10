@@ -1,17 +1,16 @@
-# Dockerfile - Simplified for pip installation
+# Dockerfile - Final version with build tools
 
-# === Final Production Image ===
-# Using a single-stage build for simplicity as Poetry is removed.
 FROM python:3.11-slim-bullseye
 
-# Set the working directory
 WORKDIR /app
 
 # Install system dependencies
-# - git is required to install the git-based dependency (sentiric-contracts-py)
-# - netcat & curl are useful for health checks and debugging
+# - git: for installing git-based dependencies
+# - build-essential: provides C/C++ compilers (needed by sentence-transformers/torch)
+# - netcat & curl: for health checks and debugging
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
+    build-essential \
     netcat-openbsd \
     curl \
     ca-certificates \
@@ -19,16 +18,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Create a non-root user for security
+# Create a non-root user
 RUN useradd --create-home --shell /bin/bash --uid 1001 appuser
 
-# Copy the requirements file first to leverage Docker layer caching
+# Copy requirements file
 COPY --chown=appuser:appuser requirements.txt .
 
-# Install Python dependencies using pip
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the application code
+# Copy application code
 COPY --chown=appuser:appuser app ./app
 
 # Set build-time arguments as environment variables
@@ -43,5 +42,4 @@ ENV SERVICE_VERSION=${SERVICE_VERSION}
 USER appuser
 
 # The command to run the application
-# Port 12041 is the Harmony Port for this service
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "12041"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "12401"]
