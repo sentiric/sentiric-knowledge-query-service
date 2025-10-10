@@ -14,20 +14,20 @@ pydantic = "^2.7.3"
 pydantic-settings = "^2.3.4"
 python-dotenv = "^1.0.1"
 structlog = "^24.2.0"
-grpcio = "^1.64.1" # Protobuf gerektirir
+grpcio = "^1.64.1"
 
 # Vector DB İstemcisi
 qdrant-client = "^1.9.0"
+
 # Vektörleştirmek için hafif modelleyici
 sentence-transformers = "^2.7.0"
+
 # Güvenlik ve API çağrıları
-httpx = "^0.27.0" 
+httpx = "^0.27.0"
 
-# Protobuf zorlaması KALDIRILDI, Contract'ın Protobuf'u getirmesini bekle
-# protobuf = "^6.32.0" 
-
-# Protobuf stubs (Adı düzeltildi)
-sentiric-contracts-py = { git = "https://github.com/sentiric/sentiric-contracts.git", tag = "v1.9.0" }
+# NOT: 'sentiric-contracts-py' bağımlılığı, Docker build'lerinde yaşanan
+# sorunlar nedeniyle kaldırılmıştır. Bu bağımlılık artık requirements.txt
+# dosyası üzerinden doğrudan git'ten kurulmaktadır.
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2.2"

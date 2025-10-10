@@ -1,0 +1,22 @@
+# .dockerignore
+
+# Git
+.git
+.gitignore
+
+# Poetry files (no longer needed in the image)
+pyproject.toml
+poetry.lock
+.venv
+venv/
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
