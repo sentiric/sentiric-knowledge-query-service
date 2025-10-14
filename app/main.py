@@ -14,7 +14,7 @@ async def lifespan(app: FastAPI):
     logger.info("Knowledge Query Service başlatılıyor", 
                 version=settings.SERVICE_VERSION, 
                 env=settings.ENV,
-                qdrant_url=settings.QDRANT_URL)
+                qdrant_url=settings.QDRANT_HTTP_URL)
     
     # TODO: Qdrant Client ve Embedding Model'i başlat
     # global QDRANT_CLIENT, EMBEDDING_MODEL

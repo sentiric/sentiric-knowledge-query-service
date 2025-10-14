@@ -11,12 +11,18 @@ class Settings(BaseSettings):
     SERVICE_VERSION: str = "0.1.0"
     
     # Vector Database (Qdrant) Ayarları
-    QDRANT_URL: str
+    QDRANT_HTTP_URL: str
+    QDRANT_GRPC_URL: Optional[str] = None
     QDRANT_API_KEY: Optional[str] = None
-    QDRANT_COLLECTION_PREFIX: str = "sentiric_kb_"
     
-    # Embedding Model Ayarları
-    EMBEDDING_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
+    # Qdrant'ta oluşturulacak koleksiyonların ön eki. Sonuna tenant_id eklenecek.
+    QDRANT_DB_COLLECTION_PREFIX: str = "sentiric_kb_"
+    
+    # Metinleri vektöre çevirmek için kullanılacak model. İki servisin de aynı modeli kullanması şarttır.
+    QDRANT_DB_EMBEDDING_MODEL_NAME: str = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+    
+    # Bu servise özgü ayarlar
+    KNOWLEDGE_QUERY_DEFAULT_TOP_K: int = 3
 
     model_config = SettingsConfigDict(
         env_file=".env", 
