@@ -63,6 +63,8 @@ jobs:
             ghcr.io/${{ env.SERVICE_NAME }}:${{ env.SERVICE_VERSION }}-cpu
           build-args: |
             SERVICE_VERSION=${{ env.SERVICE_VERSION }}
+            GIT_COMMIT=${{ env.GIT_COMMIT }}
+            BUILD_DATE=${{ env.BUILD_DATE }}            
             TORCH_INDEX_URL=--extra-index-url https://download.pytorch.org/whl/cpu
 
   # =================================
@@ -111,4 +113,6 @@ jobs:
             ghcr.io/${{ env.SERVICE_NAME }}:${{ env.SERVICE_VERSION }}-gpu
           build-args: |
             SERVICE_VERSION=${{ env.SERVICE_VERSION }}
+            GIT_COMMIT=${{ env.GIT_COMMIT }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
             TORCH_INDEX_URL=
