@@ -1,26 +1,56 @@
-# sentiric-knowledge-query-service/app/main.py
+# sentiric-knowledge-query-service/app/main.py (YENİ VE TUTARLI HALİ)
+
 from fastapi import FastAPI, status
 from contextlib import asynccontextmanager
+import structlog
+
 from app.core.logging import setup_logging
 from app.core.config import settings
-import structlog
-# from qdrant_client import QdrantClient # İleride eklenecek
+from app.core.health import start_health_server, health_state # <-- YENİ IMPORT
+
+# --- YENİ İMPORTLAR ---
+from qdrant_client import QdrantClient
+from sentence_transformers import SentenceTransformer
 
 logger = structlog.get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # --- Başlangıç İşlemleri ---
     setup_logging()
+    
+    # Kendi gözlemlenebilirlik portunda health sunucusunu başlat
+    # NOT: Bu portun Docker Compose'da EXPOSE edilmesi gerekiyor.
+    start_health_server(port=17022) # <-- HARMONİK PORT KULLANIMI
+    
     logger.info("Knowledge Query Service başlatılıyor", 
                 version=settings.SERVICE_VERSION, 
-                env=settings.ENV,
-                qdrant_url=settings.QDRANT_HTTP_URL)
+                env=settings.ENV)
     
-    # TODO: Qdrant Client ve Embedding Model'i başlat
-    # global QDRANT_CLIENT, EMBEDDING_MODEL
-    
+    try:
+        # Qdrant Client'ı başlat ve bağlantıyı test et
+        logger.info("Qdrant istemcisi başlatılıyor...")
+        client = QdrantClient(url=settings.QDRANT_HTTP_URL, api_key=settings.QDRANT_API_KEY)
+        client.get_collections()
+        app.state.qdrant_client = client
+        health_state.set_qdrant_ready(True) # <-- SAĞLIK DURUMUNU GÜNCELLE
+        logger.info("Qdrant bağlantısı başarılı.")
+
+        # Embedding Model'i başlat
+        logger.info(f"Embedding modeli yükleniyor: {settings.QDRANT_DB_EMBEDDING_MODEL_NAME}...")
+        model = SentenceTransformer(settings.QDRANT_DB_EMBEDDING_MODEL_NAME)
+        app.state.embedding_model = model
+        health_state.set_model_ready(True) # <-- SAĞLIK DURUMUNU GÜNCELLE
+        logger.info("Embedding modeli başarıyla yüklendi.")
+
+    except Exception as e:
+        logger.critical("Başlangıç sırasında kritik bir hata oluştu!", error=str(e), exc_info=True)
+        health_state.set_qdrant_ready(False)
+        health_state.set_model_ready(False)
+
     yield
     
+    # --- Kapanış İşlemleri ---
     logger.info("Knowledge Query Service kapatılıyor")
 
 app = FastAPI(
@@ -30,18 +60,9 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-@app.get("/health", status_code=status.HTTP_200_OK)
-async def health_check():
-    # TODO: Qdrant'a basit bir ping atarak health check'i gerçekle
-    # if QDRANT_CLIENT.get_health_status().ok():
-    #     return {"status": "ok", "service": "knowledge-query"}
-    
-    return {"status": "ok", "service": "knowledge-query"}
+# Ana API endpoint'i (artık /health burada değil)
+@app.get("/", status_code=status.HTTP_200_OK, include_in_schema=False)
+async def root():
+    return {"message": "Sentiric Knowledge Query Service is running."}
 
-# RPC'ler burada tanımlanacak (Query RPC'si)
-# @app.post(settings.API_V1_STR + "/query")
-# async def run_query(request: QueryRequest):
-#    # 1. Query metnini vektörleştir
-#    # 2. Qdrant'ta sorgula
-#    # 3. Sonuçları döndür
-#    pass
+# ... (gelecekteki /api/v1/query gibi diğer endpoint'ler buraya eklenecek) ...
