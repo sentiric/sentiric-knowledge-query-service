@@ -39,7 +39,12 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
-def start_health_server(port: int):
+
+    # YENİ METOT: Bu metot, access loglarını konsola yazmayı engeller.
+    def log_message(self, format, *args):
+        return
+
+def start_health_serve(port: int):
     server = HTTPServer(('', port), HealthCheckHandler)
     thread = threading.Thread(target=server.serve_forever)
     thread.daemon = True
