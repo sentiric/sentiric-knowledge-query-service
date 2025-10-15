@@ -1,68 +1,71 @@
-# sentiric-knowledge-query-service/app/main.py (YENİ VE TUTARLI HALİ)
-
-from fastapi import FastAPI, status
+# sentiric-knowledge-query-service/app/main.py
+from fastapi import FastAPI, Response, status
 from contextlib import asynccontextmanager
 import structlog
+import asyncio
 
 from app.core.logging import setup_logging
 from app.core.config import settings
-from app.core.health import start_health_server, health_state # <-- YENİ IMPORT
-
-# --- YENİ İMPORTLAR ---
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 
 logger = structlog.get_logger(__name__)
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # --- Başlangıç İşlemleri ---
-    setup_logging()
-    
-    # Kendi gözlemlenebilirlik portunda health sunucusunu başlat
-    # NOT: Bu portun Docker Compose'da EXPOSE edilmesi gerekiyor.
-    start_health_server(port=17022) # <-- HARMONİK PORT KULLANIMI
-    
-    logger.info("Knowledge Query Service başlatılıyor", 
-                version=settings.SERVICE_VERSION, 
-                env=settings.ENV)
-    
+# Uygulamanın durumunu ve bağımlılıklarını tutacak global nesne
+class AppState:
+    def __init__(self):
+        self.is_ready = False
+        self.qdrant_client = None
+        self.embedding_model = None
+
+app_state = AppState()
+
+async def load_dependencies():
+    """Ağır bağımlılıkları (model, db istemcisi) yükler ve durumu günceller."""
     try:
-        # Qdrant Client'ı başlat ve bağlantıyı test et
         logger.info("Qdrant istemcisi başlatılıyor...")
         client = QdrantClient(url=settings.QDRANT_HTTP_URL, api_key=settings.QDRANT_API_KEY)
-        client.get_collections()
-        app.state.qdrant_client = client
-        health_state.set_qdrant_ready(True) # <-- SAĞLIK DURUMUNU GÜNCELLE
+        client.get_collections() # Bağlantıyı test et
+        app_state.qdrant_client = client
         logger.info("Qdrant bağlantısı başarılı.")
 
-        # Embedding Model'i başlat
         logger.info(f"Embedding modeli yükleniyor: {settings.QDRANT_DB_EMBEDDING_MODEL_NAME}...")
         model = SentenceTransformer(settings.QDRANT_DB_EMBEDDING_MODEL_NAME)
-        app.state.embedding_model = model
-        health_state.set_model_ready(True) # <-- SAĞLIK DURUMUNU GÜNCELLE
+        app_state.embedding_model = model
         logger.info("Embedding modeli başarıyla yüklendi.")
 
+        app_state.is_ready = True # Her şey hazır, servis sağlıklı.
     except Exception as e:
-        logger.critical("Başlangıç sırasında kritik bir hata oluştu!", error=str(e), exc_info=True)
-        health_state.set_qdrant_ready(False)
-        health_state.set_model_ready(False)
+        logger.critical("Başlangıç sırasında kritik bir bağımlılık yüklenemedi!", error=str(e), exc_info=True)
+        app_state.is_ready = False
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    setup_logging()
+    logger.info("Knowledge Query Service başlatılıyor", version=settings.SERVICE_VERSION, env=settings.ENV)
+    
+    # Model yüklemeyi arka planda başlat, sunucunun açılmasını engelleme.
+    asyncio.create_task(load_dependencies())
+    
     yield
     
-    # --- Kapanış İşlemleri ---
     logger.info("Knowledge Query Service kapatılıyor")
 
 app = FastAPI(
     title="Sentiric Knowledge Query Service",
-    description="RAG sorgu motoru (Okuma bacağı)",
+    description="RAG sorgu motoru (Okuma bacağı).",
     version=settings.SERVICE_VERSION,
     lifespan=lifespan
 )
 
-# Ana API endpoint'i (artık /health burada değil)
-@app.get("/", status_code=status.HTTP_200_OK, include_in_schema=False)
-async def root():
-    return {"message": "Sentiric Knowledge Query Service is running."}
-
-# ... (gelecekteki /api/v1/query gibi diğer endpoint'ler buraya eklenecek) ...
+@app.get("/health", status_code=status.HTTP_200_OK, include_in_schema=False)
+async def health_check():
+    """Model ve DB bağlantısı hazır olduğunda 200, değilse 503 döner."""
+    if app_state.is_ready:
+        return {"status": "healthy"}
+    else:
+        return Response(
+            content='{"status": "initializing"}',
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            media_type="application/json"
+        )
