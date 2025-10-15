@@ -85,4 +85,4 @@ USER appuser
 EXPOSE 17020 17021 17022
 
 # knowledge-query-service için:
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "17020", "--log-config", "null"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "17020", "--no-access-log"]
