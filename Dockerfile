@@ -81,8 +81,10 @@ RUN mkdir -p /app/model-cache && \
 
 USER appuser
 
-# knowledge-query-service için:
+# knowledge-query-service için: HTTP, gRPC, ve Metrics portları
 EXPOSE 17020 17021 17022
 
 # knowledge-query-service için:
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "17020", "--no-access-log"]
+# CMD, konfigürasyonda tanımlı HTTP portunu kullanmak üzere ayarlandı.
+# Uvicorn sadece HTTP'yi çalıştırır. gRPC ve Metrics için gelecekte ek process yöneticisi (örn: supervisord) gerekebilir.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "${KNOWLEDGE_QUERY_SERVICE_HTTP_PORT:-17020}", "--no-access-log"]

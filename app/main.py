@@ -4,27 +4,13 @@ from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI, HTTPException, Response, status
-from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient, models
+from qdrant_client.http.exceptions import UnexpectedResponse
 from sentence_transformers import SentenceTransformer
 
 from app.core.config import settings
 from app.core.logging import setup_logging
-
-# Pydantic Modelleri (API Kontratı)
-class QueryResult(BaseModel):
-    content: str
-    score: float
-    source: str
-    metadata: dict
-
-class QueryRequest(BaseModel):
-    query: str
-    tenant_id: str
-    top_k: int = Field(default=settings.KNOWLEDGE_QUERY_DEFAULT_TOP_K, gt=0, le=20)
-
-class QueryResponse(BaseModel):
-    results: list[QueryResult]
+from app import schemas
 
 # Global uygulama durumu
 class AppState:
@@ -94,8 +80,8 @@ async def health_check():
             media_type="application/json"
         )
 
-@app.post(f"{settings.API_V1_STR}/query", response_model=QueryResponse, tags=["RAG"])
-async def query_knowledge_base(request: QueryRequest):
+@app.post(f"{settings.API_V1_STR}/query", response_model=schemas.QueryResponse, tags=["RAG"])
+async def query_knowledge_base(request: schemas.QueryRequest):
     """Doğal dil sorgusunu vektörleştirir ve Qdrant'ta arama yapar."""
     if not app_state.is_ready or not app_state.embedding_model or not app_state.qdrant_client:
         raise HTTPException(
@@ -119,7 +105,7 @@ async def query_knowledge_base(request: QueryRequest):
         )
 
         results = [
-            QueryResult(
+            schemas.QueryResult(
                 content=hit.payload.get("content", ""),
                 score=hit.score,
                 source=hit.payload.get("source", "unknown"),
@@ -129,23 +115,26 @@ async def query_knowledge_base(request: QueryRequest):
         ]
         
         log.info(f"{len(results)} sonuç bulundu.")
-        return QueryResponse(results=results)
+        return schemas.QueryResponse(results=results)
 
-    except Exception as e:
-        # Qdrant'tan gelebilecek 'Not Found' gibi özel hataları yakala
-        if "404" in str(e) or "not found" in str(e).lower():
-             log.warning("Koleksiyon bulunamadı.", error=str(e))
+    except UnexpectedResponse as e:
+        # Qdrant'tan HTTP hatalarını yakala
+        if e.status_code == 404:
+             log.warning("Koleksiyon bulunamadı.", error=str(e), collection=collection_name)
              raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Bilgi tabanı (koleksiyon: {collection_name}) bulunamadı."
              )
-        
+        # Diğer Qdrant HTTP hatalarını 500 olarak döndür
+        log.error("Qdrant ile iletişimde hata oluştu.", http_status=e.status_code, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Vektör veritabanıyla iletişimde bir sorun oluştu."
+        )
+    
+    except Exception as e:
         log.error("Sorgu işlenirken bir hata oluştu.", error=str(e), exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="İç sunucu hatası."
         )
-
-# Not: gRPC sunucusunu eklemek için, ayrı bir kütüphane (örn: `grpclib`) veya
-# farklı bir process yönetimi gerekir. Şimdilik şartnamedeki HTTP arayüzü
-# tam olarak karşılanmıştır.

@@ -9,4 +9,5 @@ pydantic-settings
 python-dotenv
 structlog
 qdrant-client
+httpx
 sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.9.0

@@ -8,6 +8,12 @@
 
 Bu servis sadece **Okuma (Query)** işlemlerinden sorumludur. Yazma (Indexing) işlemleri `knowledge-indexing-service` tarafından yürütülür.
 
+### Protokoller
+Servis aşağıdaki port ve protokoller üzerinden erişilebilir olmalıdır:
+*   **HTTP (Port 17020):** FastAPI REST API (Ana sorgulama `/api/v1/query`, sağlık kontrolü `/health`).
+*   **gRPC (Port 17021):** Yüksek performanslı, dahili servisler arası iletişim (Şu anda planlama aşamasında/entegrasyon için hazır).
+*   **Metrics (Port 17022):** Prometheus uyumlu metrikler (Performans takibi, Hata oranları, Model yükleme süreleri).
+
 ```mermaid
 sequenceDiagram
     participant Agent as Agent Service
