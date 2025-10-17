@@ -26,4 +26,4 @@ qdrant-client
 httpx
 
 # Git-based dependency for Contracts
-sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@main
+sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.9.1
