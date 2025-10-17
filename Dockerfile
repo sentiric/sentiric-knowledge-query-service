@@ -1,4 +1,4 @@
-### 📄 File: Dockerfile (YENİ VE DÜZELTİLMİŞ VERSİYON - v2.1)
+### 📄 File: Dockerfile (YENİ VE DÜZELTİLMİŞ VERSİYON - v2.2 gRPC Destekli)
 # Bu Dockerfile, hem CPU hem de GPU imajlarını dinamik ve uyumlu bir şekilde oluşturur.
 
 # --- Build Argümanları ---
@@ -32,12 +32,10 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY requirements.txt .
 
 # --- DÜZELTİLMİŞ VE DAHA SAĞLAM BAĞIMLILIK KURULUMU ---
-# Process substitution (<(...)) yerine standart shell komutları kullanıyoruz.
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip && \
     if [ "$TARGET_DEVICE" = "gpu" ]; then \
         echo "GPU imajı: PyTorch zaten mevcut, diğer bağımlılıklar kuruluyor."; \
-        # 'torch' içeren satırları atlayarak geçici bir requirements dosyası oluştur
         grep -v 'torch' requirements.txt > requirements.tmp.txt; \
         pip install --no-cache-dir -r requirements.tmp.txt; \
     else \
@@ -85,6 +83,5 @@ USER appuser
 EXPOSE 17020 17021 17022
 
 # knowledge-query-service için:
-# CMD, konfigürasyonda tanımlı HTTP portunu kullanmak üzere ayarlandı.
-# Uvicorn sadece HTTP'yi çalıştırır. gRPC ve Metrics için gelecekte ek process yöneticisi (örn: supervisord) gerekebilir.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "${KNOWLEDGE_QUERY_SERVICE_HTTP_PORT:-17020}", "--no-access-log"]
+# Artık Uvicorn'u doğrudan değil, runner script'i üzerinden başlatıyoruz.
+CMD ["python", "-m", "app.runner"]
