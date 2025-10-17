@@ -13,4 +13,6 @@ httpx
 # gRPC için eklendi
 grpcio
 grpcio-tools
+# Metrikler için eklendi
+prometheus-client
 sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.9.0

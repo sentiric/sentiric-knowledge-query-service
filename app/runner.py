@@ -4,14 +4,15 @@ import uvicorn
 import structlog
 from app.main import app, serve_grpc
 from app.core.config import settings
+from app.core.metrics import start_metrics_server
 
 logger = structlog.get_logger(__name__)
 
 async def main():
     """
-    Uvicorn (HTTP) ve gRPC sunucularını aynı anda asenkron olarak çalıştırır.
+    Uvicorn (HTTP), gRPC ve Prometheus Metrics sunucularını aynı anda asenkron olarak çalıştırır.
     """
-    logger.info("Starting servers...")
+    logger.info("Starting all servers...")
     
     # Uvicorn sunucusunu bir coroutine olarak yapılandır
     uvicorn_config = uvicorn.Config(
@@ -23,10 +24,11 @@ async def main():
     )
     uvicorn_server = uvicorn.Server(uvicorn_config)
     
-    # İki sunucuyu da asyncio.gather ile paralel olarak başlat
+    # Üç sunucuyu da asyncio.gather ile paralel olarak başlat
     await asyncio.gather(
         uvicorn_server.serve(),
-        serve_grpc()
+        serve_grpc(),
+        start_metrics_server()
     )
 
 if __name__ == "__main__":
