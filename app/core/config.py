@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     KNOWLEDGE_QUERY_SERVICE_GRPC_PORT: int = 17021 # Planlanan gRPC için
     KNOWLEDGE_QUERY_SERVICE_METRICS_PORT: int = 17022 # Planlanan Metrics için
 
+    # mTLS Sertifika Yolları (YENİ)
+    GRPC_TLS_CA_PATH: str
+    KNOWLEDGE_QUERY_SERVICE_CERT_PATH: str
+    KNOWLEDGE_QUERY_SERVICE_KEY_PATH: str
+    
     # Qdrant (Vector DB) Ayarları
     QDRANT_HTTP_URL: str
     QDRANT_GRPC_URL: Optional[str] = None
