@@ -1,4 +1,4 @@
-# sentiric-knowledge-query-service/app/core/logging.py
+# app/core/logging.py
 import logging
 import sys
 import structlog
@@ -17,8 +17,13 @@ def setup_logging():
 
     log_level = settings.LOG_LEVEL.upper()
     env = settings.ENV.lower()
-    
-    logging.basicConfig(format="%(message)s", stream=sys.stdout, level=log_level)
+
+    # Standart Python loglamasını structlog'a yönlendir
+    logging.basicConfig(
+        format="%(message)s",
+        stream=sys.stdout,
+        level=log_level
+    )
 
     shared_processors = [
         structlog.contextvars.merge_contextvars,
@@ -28,20 +33,39 @@ def setup_logging():
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
+        structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
     ]
 
-    if env == "development":
-        processors = shared_processors + [structlog.dev.ConsoleRenderer(colors=True)]
-    else:
-        processors = shared_processors + [structlog.processors.JSONRenderer()]
-    
+    renderer = (
+        structlog.dev.ConsoleRenderer(colors=True)
+        if env == "development"
+        else structlog.processors.JSONRenderer()
+    )
+
+    # structlog yapılandırması
     structlog.configure(
-        processors=processors,
+        processors=shared_processors,
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
+
+    formatter = structlog.stdlib.ProcessorFormatter(
+        processor=renderer,
+        foreign_pre_chain=shared_processors,
+    )
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(formatter)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(log_level)
+
     _log_setup_done = True
-    
+
     logger = structlog.get_logger("sentiric_knowledge_query_service")
-    logger.info("Loglama başarıyla yapılandırıldı.", env=env, log_level=log_level)
+    logger.info(
+        "Loglama başarıyla yapılandırıldı.",
+        env=env,
+        log_level=log_level
+    )

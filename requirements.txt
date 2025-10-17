@@ -1,29 +1,12 @@
-# requirements.txt - v5 Generic for flexible builds
-
-# Core ML dependencies (specific version will be decided at build time)
+# Docker build için sadeleştirilmiş bağımlılık listesi
+# Gerçek PyTorch versiyonu Dockerfile içinde TARGET_DEVICE'a göre belirlenir.
 torch
 sentence-transformers
-
-# Core Framework
 fastapi
 uvicorn[standard]
-
-# Data Validation and Settings
 pydantic
 pydantic-settings
 python-dotenv
-
-# Logging
 structlog
-
-# gRPC
-grpcio
-
-# Vector DB Client
 qdrant-client
-
-# HTTP Client
-httpx
-
-# Git-based dependency for Contracts
-sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.9.1
+sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.9.0

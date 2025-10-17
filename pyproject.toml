@@ -2,9 +2,10 @@
 name = "sentiric-knowledge-query-service"
 version = "0.1.0"
 description = "Retrieval Augmented Generation (RAG) Query Service for vector database lookups (Qdrant)."
-authors = ["Sentiric Team"]
+authors = ["Sentiric Team <dev@sentiric.ai>"]
 license = "Apache-2.0"
 readme = "README.md"
+repository = "https://github.com/sentiric/sentiric-knowledge-query-service"
 
 [tool.poetry.dependencies]
 python = "^3.11"
@@ -14,16 +15,24 @@ pydantic = "^2.7.3"
 pydantic-settings = "^2.3.4"
 python-dotenv = "^1.0.1"
 structlog = "^24.2.0"
-grpcio = "^1.64.1"
 qdrant-client = "^1.9.0"
 sentence-transformers = "^2.7.0"
-protobuf = "4.25.3"
-httpx = "^0.27.0"
-sentiric-contracts-py = { git = "https://github.com/sentiric/sentiric-contracts.git", tag = "v1.9.1" } # Yeni versiyonu kullanacak
+torch = "^2.3.1"
+# gRPC ve Protobuf bağımlılıkları, kontrat paketinden gelecek.
+sentiric-contracts-py = { git = "https://github.com/sentiric/sentiric-contracts.git", tag = "v1.9.0" }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2.2"
+pytest-asyncio = "^0.23.7"
+pytest-cov = "^5.0.0"
+httpx = "^0.27.0" # Testler için async HTTP client
 
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+
+[tool.black]
+line-length = 88
 
 [build-system]
 requires = ["poetry-core"]
