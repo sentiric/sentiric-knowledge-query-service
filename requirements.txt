@@ -16,6 +16,7 @@ httpx==0.27.2
 grpcio==1.68.0
 grpcio-tools==1.68.0
 prometheus-client==0.21.0
-
-# Manual Protobuf (Ortak payda)
 protobuf==5.29.0
+
+# Contracts (Dockerfile içinde manuel ve derlenerek kurulacak)
+# sentiric-contracts-py @ ... (KALDIRILDI)
