@@ -30,7 +30,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 COPY requirements.txt .
 
-# --- DÜZELTME: --no-cache-dir ve --force-reinstall eklendi ---
+# 1. Standart bağımlılıkları kur
 RUN pip install --upgrade pip && \
     if [ "$TARGET_DEVICE" = "gpu" ]; then \
         echo "GPU imajı: PyTorch zaten mevcut, diğer bağımlılıklar kuruluyor."; \
@@ -40,6 +40,9 @@ RUN pip install --upgrade pip && \
         echo "CPU imajı: Hafif PyTorch ve diğer bağımlılıklar kuruluyor."; \
         pip install --no-cache-dir --force-reinstall -r requirements.txt; \
     fi
+
+# 2. Sentiric Contracts'ı bağımlılık kontrolü OLMADAN kur (Dependency Hell Bypass)
+RUN pip install --no-deps --no-cache-dir git+https://github.com/sentiric/sentiric-contracts.git@v1.9.0
 
 # ==================================
 #      Aşama 2: Final Image
