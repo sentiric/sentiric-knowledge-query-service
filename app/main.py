@@ -7,7 +7,8 @@ from contextlib import asynccontextmanager
 import grpc
 import structlog
 from fastapi import FastAPI, HTTPException, Response, status, Request
-from qdrant_client import QdrantClient, models
+# DEĞİŞİKLİK: AsyncQdrantClient import edildi
+from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from sentence_transformers import SentenceTransformer
 
@@ -22,7 +23,8 @@ from sentiric.knowledge.v1 import query_pb2, query_pb2_grpc
 class AppState:
     def __init__(self):
         self.is_ready = False
-        self.qdrant_client: QdrantClient | None = None
+        # DEĞİŞİKLİK: Tip ipucu güncellendi
+        self.qdrant_client: AsyncQdrantClient | None = None
         self.embedding_model: SentenceTransformer | None = None
         self.grpc_server: grpc.aio.Server | None = None
 
@@ -33,12 +35,18 @@ async def load_dependencies():
     """Ağır bağımlılıkları yükler ve durumu günceller."""
     try:
         logger.info("Qdrant istemcisi başlatılıyor...", url=settings.QDRANT_HTTP_URL)
-        client = QdrantClient(url=settings.QDRANT_HTTP_URL, api_key=settings.QDRANT_API_KEY)
-        client.get_collections()
+        # DEĞİŞİKLİK: AsyncQdrantClient başlatıldı
+        client = AsyncQdrantClient(url=settings.QDRANT_HTTP_URL, api_key=settings.QDRANT_API_KEY)
+        
+        # Bağlantı testi (Async)
+        await client.get_collections()
+        
         app_state.qdrant_client = client
-        logger.info("Qdrant bağlantısı başarılı.")
+        logger.info("Qdrant bağlantısı başarılı (Async).")
 
         logger.info(f"Embedding modeli yükleniyor...", model=settings.QDRANT_DB_EMBEDDING_MODEL_NAME)
+        # Not: SentenceTransformer CPU-bound olduğu için thread içinde çalıştırılabilir
+        # ancak şimdilik basitlik adına senkron bırakıyoruz (başlangıçta bir kez çalışır).
         model = SentenceTransformer(
             settings.QDRANT_DB_EMBEDDING_MODEL_NAME,
             cache_folder=settings.HF_HOME
@@ -102,7 +110,7 @@ async def serve_grpc():
     server = grpc.aio.server(interceptors=[MetricsInterceptor()])
     query_pb2_grpc.add_KnowledgeQueryServiceServicer_to_server(KnowledgeQueryServicer(), server)
     
-    # --- mTLS GÜVENLİK GÜNCELLEMESİ ---
+    # --- mTLS GÜVENLİK ---
     try:
         private_key = Path(settings.KNOWLEDGE_QUERY_SERVICE_KEY_PATH).read_bytes()
         certificate_chain = Path(settings.KNOWLEDGE_QUERY_SERVICE_CERT_PATH).read_bytes()
@@ -111,7 +119,7 @@ async def serve_grpc():
         server_credentials = grpc.ssl_server_credentials(
             private_key_certificate_chain_pairs=[(private_key, certificate_chain)],
             root_certificates=ca_cert,
-            require_client_auth=True  # İstemci sertifikasını zorunlu kıl
+            require_client_auth=True
         )
         listen_addr = f'[::]:{settings.KNOWLEDGE_QUERY_SERVICE_GRPC_PORT}'
         server.add_secure_port(listen_addr, server_credentials)
@@ -120,7 +128,6 @@ async def serve_grpc():
         logger.warning("Sertifika dosyaları bulunamadı, güvensiz gRPC portu kullanılıyor (sadece yerel geliştirme için!).")
         listen_addr = f'[::]:{settings.KNOWLEDGE_QUERY_SERVICE_GRPC_PORT}'
         server.add_insecure_port(listen_addr)
-    # --- GÜNCELLEME SONU ---
     
     app_state.grpc_server = server
     await server.start()
@@ -139,7 +146,8 @@ async def lifespan(app: FastAPI):
     
     logger.info("Knowledge Query Service kapatılıyor.")
     if app_state.qdrant_client:
-        app_state.qdrant_client.close()
+        # DEĞİŞİKLİK: await eklendi
+        await app_state.qdrant_client.close()
     if app_state.grpc_server:
         await app_state.grpc_server.stop(grace=1)
 
@@ -190,10 +198,13 @@ async def _perform_query(tenant_id: str, query: str, top_k: int) -> list[schemas
 
     try:
         log.info("Sorgu vektörleştiriliyor...")
+        # SentenceTransformer senkron çalışır, CPU-bound işlemdir.
         query_vector = app_state.embedding_model.encode(query).tolist()
 
         log.info("Vektör veritabanında arama yapılıyor...", top_k=top_k)
-        search_result = app_state.qdrant_client.search(
+        
+        # DEĞİŞİKLİK: Await eklendi (AsyncQdrantClient.search)
+        search_result = await app_state.qdrant_client.search(
             collection_name=collection_name,
             query_vector=query_vector,
             limit=top_k,
@@ -201,7 +212,7 @@ async def _perform_query(tenant_id: str, query: str, top_k: int) -> list[schemas
         )
 
         results = [
-            schemas.QueryResult(content=hit.payload.get("content", ""), score=hit.score, source=hit.payload.get("source", "unknown"), metadata=hit.payload.get("metadata", {}))
+            schemas.QueryResult(content=hit.payload.get("content", ""), score=hit.score, source=hit.payload.get("source_uri", "unknown"), metadata=hit.payload)
             for hit in search_result
         ]
         log.info(f"{len(results)} sonuç bulundu.")
@@ -209,7 +220,8 @@ async def _perform_query(tenant_id: str, query: str, top_k: int) -> list[schemas
     except UnexpectedResponse as e:
         if e.status_code == 404:
             log.warning("Koleksiyon bulunamadı.", error=str(e))
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Bilgi tabanı (koleksiyon: {collection_name}) bulunamadı.")
+            # Koleksiyon yoksa boş liste dönmek daha güvenlidir, 404 yerine.
+            return [] 
         log.error("Qdrant ile iletişimde hata.", http_status=e.status_code, exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Vektör veritabanıyla iletişimde bir sorun oluştu.")
     except Exception as e:
