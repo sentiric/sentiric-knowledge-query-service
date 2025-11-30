@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 import grpc
 import structlog
 from fastapi import FastAPI, HTTPException, Response, status, Request
-# DEĞİŞİKLİK: AsyncQdrantClient import edildi
+# DEĞİŞİKLİK: AsyncQdrantClient kullanıyoruz
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from sentence_transformers import SentenceTransformer
@@ -45,8 +45,7 @@ async def load_dependencies():
         logger.info("Qdrant bağlantısı başarılı (Async).")
 
         logger.info(f"Embedding modeli yükleniyor...", model=settings.QDRANT_DB_EMBEDDING_MODEL_NAME)
-        # Not: SentenceTransformer CPU-bound olduğu için thread içinde çalıştırılabilir
-        # ancak şimdilik basitlik adına senkron bırakıyoruz (başlangıçta bir kez çalışır).
+        # SentenceTransformer CPU-bound bir işlemdir, başlangıçta senkron çalışmasında sakınca yoktur.
         model = SentenceTransformer(
             settings.QDRANT_DB_EMBEDDING_MODEL_NAME,
             cache_folder=settings.HF_HOME
@@ -203,7 +202,7 @@ async def _perform_query(tenant_id: str, query: str, top_k: int) -> list[schemas
 
         log.info("Vektör veritabanında arama yapılıyor...", top_k=top_k)
         
-        # DEĞİŞİKLİK: Await eklendi (AsyncQdrantClient.search)
+        # DEĞİŞİKLİK: await eklendi (AsyncQdrantClient.search)
         search_result = await app_state.qdrant_client.search(
             collection_name=collection_name,
             query_vector=query_vector,
