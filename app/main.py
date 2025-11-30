@@ -3,7 +3,6 @@ import asyncio
 from pathlib import Path
 import time
 from contextlib import asynccontextmanager
-import importlib.metadata
 
 import grpc
 import structlog
@@ -32,38 +31,17 @@ logger = structlog.get_logger(__name__)
 async def load_dependencies():
     """Ağır bağımlılıkları yükler ve durumu günceller."""
     try:
-        # --- DIAGNOSTICS START ---
-        try:
-            version = importlib.metadata.version("qdrant-client")
-            logger.info(f"📦 Installed Qdrant Client Version: {version}")
-        except Exception:
-            logger.warning("Could not determine Qdrant Client version via metadata.")
-        # --- DIAGNOSTICS END ---
-
         logger.info("Qdrant istemcisi başlatılıyor...", url=settings.QDRANT_HTTP_URL)
         
-        # Sync Client
+        # Sync Client (Thread içinde kullanacağız)
         client = QdrantClient(url=settings.QDRANT_HTTP_URL, api_key=settings.QDRANT_API_KEY)
-        
-        # --- INTROSPECTION START ---
-        # Client'ın metotlarını kontrol et
-        available_methods = dir(client)
-        has_search = "search" in available_methods
-        has_query_points = "query_points" in available_methods
-        
-        logger.info(f"🔍 Qdrant Client Introspection: Has 'search'={has_search}, Has 'query_points'={has_query_points}")
-        
-        if not has_search:
-            logger.error("CRITICAL: 'search' method missing from QdrantClient! Dumping partial attributes:", attributes=available_methods[:20])
-        # --- INTROSPECTION END ---
-
-        # Bağlantı testi
-        client.get_collections()
+        client.get_collections() # Bağlantı testi
         
         app_state.qdrant_client = client
-        logger.info("Qdrant bağlantısı başarılı (Sync Client).")
+        logger.info("Qdrant bağlantısı başarılı.")
 
         logger.info(f"Embedding modeli yükleniyor...", model=settings.QDRANT_DB_EMBEDDING_MODEL_NAME)
+        # Model yükleme (CPU-bound) thread'e devredildi
         model = await asyncio.to_thread(
             SentenceTransformer,
             settings.QDRANT_DB_EMBEDDING_MODEL_NAME,
@@ -78,12 +56,12 @@ async def load_dependencies():
         logger.critical("Başlangıç sırasında kritik bir bağımlılık yüklenemedi!", error=str(e), exc_info=True)
         app_state.is_ready = False
 
-# ... (gRPC Interceptor ve Servicer aynı kalıyor) ...
+# --- gRPC Metrik Interceptor'ı ---
 class MetricsInterceptor(grpc.aio.ServerInterceptor):
     async def intercept_service(self, continuation, handler_call_details):
         start_time = time.perf_counter()
-        method_name = handler_call_details.method.split('/')[-1]
         metrics.REQUESTS_IN_PROGRESS.labels(method='grpc').inc()
+        
         status_code = grpc.StatusCode.OK
         try:
             response = await continuation(handler_call_details)
@@ -101,6 +79,7 @@ class KnowledgeQueryServicer(query_pb2_grpc.KnowledgeQueryServiceServicer):
     async def Query(self, request: query_pb2.QueryRequest, context: grpc.aio.ServicerContext) -> query_pb2.QueryResponse:
         if not app_state.is_ready:
             await context.abort(grpc.StatusCode.UNAVAILABLE, "Servis henüz başlatılıyor.")
+        
         try:
             results = await _perform_query(
                 tenant_id=request.tenant_id,
@@ -108,7 +87,12 @@ class KnowledgeQueryServicer(query_pb2_grpc.KnowledgeQueryServiceServicer):
                 top_k=request.top_k if request.top_k > 0 else settings.KNOWLEDGE_QUERY_DEFAULT_TOP_K,
             )
             grpc_results = [
-                query_pb2.QueryResult(content=r.content, score=r.score, source=r.source, metadata=r.metadata)
+                query_pb2.QueryResult(
+                    content=r.content, 
+                    score=r.score, 
+                    source=r.source, 
+                    metadata=r.metadata
+                )
                 for r in results
             ]
             return query_pb2.QueryResponse(results=grpc_results)
@@ -124,10 +108,12 @@ class KnowledgeQueryServicer(query_pb2_grpc.KnowledgeQueryServiceServicer):
 async def serve_grpc():
     server = grpc.aio.server(interceptors=[MetricsInterceptor()])
     query_pb2_grpc.add_KnowledgeQueryServiceServicer_to_server(KnowledgeQueryServicer(), server)
+    
     try:
         private_key = Path(settings.KNOWLEDGE_QUERY_SERVICE_KEY_PATH).read_bytes()
         certificate_chain = Path(settings.KNOWLEDGE_QUERY_SERVICE_CERT_PATH).read_bytes()
         ca_cert = Path(settings.GRPC_TLS_CA_PATH).read_bytes()
+
         server_credentials = grpc.ssl_server_credentials(
             private_key_certificate_chain_pairs=[(private_key, certificate_chain)],
             root_certificates=ca_cert,
@@ -140,6 +126,7 @@ async def serve_grpc():
         logger.warning("Sertifika dosyaları bulunamadı, güvensiz gRPC portu kullanılıyor.")
         listen_addr = f'[::]:{settings.KNOWLEDGE_QUERY_SERVICE_GRPC_PORT}'
         server.add_insecure_port(listen_addr)
+    
     app_state.grpc_server = server
     await server.start()
     await server.wait_for_termination()
@@ -149,8 +136,11 @@ async def lifespan(app: FastAPI):
     setup_logging()
     metrics.SERVICE_INFO.info({'version': settings.SERVICE_VERSION})
     logger.info("Knowledge Query Service başlatılıyor", version=settings.SERVICE_VERSION, env=settings.ENV)
+    
     asyncio.create_task(load_dependencies())
+    
     yield
+    
     logger.info("Knowledge Query Service kapatılıyor.")
     if app_state.qdrant_client:
         app_state.qdrant_client.close()
@@ -200,29 +190,14 @@ async def _perform_query(tenant_id: str, query: str, top_k: int) -> list[schemas
 
         log.info("Vektör veritabanında arama yapılıyor...", top_k=top_k)
         
-        # FALLBACK MANTIKLI ARAMA
-        def do_search():
-            # Eğer search varsa kullan
-            if hasattr(app_state.qdrant_client, 'search'):
-                return app_state.qdrant_client.search(
-                    collection_name=collection_name,
-                    query_vector=query_vector,
-                    limit=top_k,
-                    with_payload=True
-                )
-            # Eğer yoksa (çok düşük ihtimal ama) query_points dene
-            elif hasattr(app_state.qdrant_client, 'query_points'):
-                log.warning("'search' metodu bulunamadı, 'query_points' deneniyor.")
-                return app_state.qdrant_client.query_points(
-                    collection_name=collection_name,
-                    query=query_vector,
-                    limit=top_k,
-                    with_payload=True
-                ).points
-            else:
-                raise AttributeError("QdrantClient ne 'search' ne de 'query_points' metoduna sahip!")
-
-        search_result = await asyncio.to_thread(do_search)
+        # Sync Client'ı Thread içinde çalıştır
+        search_result = await asyncio.to_thread(
+            app_state.qdrant_client.search,
+            collection_name=collection_name,
+            query_vector=query_vector,
+            limit=top_k,
+            with_payload=True
+        )
 
         results = [
             schemas.QueryResult(
@@ -249,5 +224,6 @@ async def _perform_query(tenant_id: str, query: str, top_k: int) -> list[schemas
 async def query_knowledge_base(request: schemas.QueryRequest):
     if not app_state.is_ready:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Servis henüz başlatılıyor.")
+    
     results = await _perform_query(tenant_id=request.tenant_id, query=request.query, top_k=request.top_k)
     return schemas.QueryResponse(results=results)
