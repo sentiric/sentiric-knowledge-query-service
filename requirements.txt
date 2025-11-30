@@ -7,11 +7,12 @@ pydantic
 pydantic-settings
 python-dotenv
 structlog
-qdrant-client>=1.9.0
+# Sürüm yükseltildi: Cache'i kırmak için
+qdrant-client>=1.12.0
 httpx
-# gRPC için eklendi
+# gRPC için
 grpcio
 grpcio-tools
-# Metrikler için eklendi
+# Metrikler için
 prometheus-client
 sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.9.0
