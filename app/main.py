@@ -6,9 +6,8 @@ from contextlib import asynccontextmanager
 
 import grpc
 import structlog
-# Diagnostik için importlar
-import qdrant_client
 from fastapi import FastAPI, HTTPException, Response, status, Request
+# Sync Client kullanıyoruz (En kararlı yöntem)
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from sentence_transformers import SentenceTransformer
@@ -33,26 +32,19 @@ logger = structlog.get_logger(__name__)
 async def load_dependencies():
     """Ağır bağımlılıkları yükler ve durumu günceller."""
     try:
-        # --- DİAGNOSTİK LOGLAMA BAŞLANGICI ---
-        logger.info(f"Qdrant Client Version: {qdrant_client.__version__}")
-        # ------------------------------------
-
         logger.info("Qdrant istemcisi başlatılıyor...", url=settings.QDRANT_HTTP_URL)
+        
+        # Sync Client Başlatma (Bloklamayı önlemek için basit init)
         client = QdrantClient(url=settings.QDRANT_HTTP_URL, api_key=settings.QDRANT_API_KEY)
+        
+        # Bağlantı testi (Hızlı bir çağrı)
         client.get_collections()
         
-        # --- DİAGNOSTİK LOGLAMA ---
-        attrs = dir(client)
-        has_search = 'search' in attrs
-        logger.info(f"Qdrant Client Init OK. Has 'search' method? {has_search}")
-        if not has_search:
-            logger.warning("Available attributes:", attrs=attrs)
-        # --------------------------
-
         app_state.qdrant_client = client
         logger.info("Qdrant bağlantısı başarılı (Sync Client).")
 
         logger.info(f"Embedding modeli yükleniyor...", model=settings.QDRANT_DB_EMBEDDING_MODEL_NAME)
+        # Model yükleme işlemini thread'e atıyoruz
         model = await asyncio.to_thread(
             SentenceTransformer,
             settings.QDRANT_DB_EMBEDDING_MODEL_NAME,
@@ -67,12 +59,13 @@ async def load_dependencies():
         logger.critical("Başlangıç sırasında kritik bir bağımlılık yüklenemedi!", error=str(e), exc_info=True)
         app_state.is_ready = False
 
-# ... (gRPC Interceptor ve Servicer kodları aynı kalıyor) ...
+# --- gRPC Metrik Interceptor'ı ---
 class MetricsInterceptor(grpc.aio.ServerInterceptor):
     async def intercept_service(self, continuation, handler_call_details):
         start_time = time.perf_counter()
         method_name = handler_call_details.method.split('/')[-1]
         metrics.REQUESTS_IN_PROGRESS.labels(method='grpc').inc()
+        
         status_code = grpc.StatusCode.OK
         try:
             response = await continuation(handler_call_details)
@@ -90,6 +83,7 @@ class KnowledgeQueryServicer(query_pb2_grpc.KnowledgeQueryServiceServicer):
     async def Query(self, request: query_pb2.QueryRequest, context: grpc.aio.ServicerContext) -> query_pb2.QueryResponse:
         if not app_state.is_ready:
             await context.abort(grpc.StatusCode.UNAVAILABLE, "Servis henüz başlatılıyor.")
+        
         try:
             results = await _perform_query(
                 tenant_id=request.tenant_id,
@@ -113,10 +107,12 @@ class KnowledgeQueryServicer(query_pb2_grpc.KnowledgeQueryServiceServicer):
 async def serve_grpc():
     server = grpc.aio.server(interceptors=[MetricsInterceptor()])
     query_pb2_grpc.add_KnowledgeQueryServiceServicer_to_server(KnowledgeQueryServicer(), server)
+    
     try:
         private_key = Path(settings.KNOWLEDGE_QUERY_SERVICE_KEY_PATH).read_bytes()
         certificate_chain = Path(settings.KNOWLEDGE_QUERY_SERVICE_CERT_PATH).read_bytes()
         ca_cert = Path(settings.GRPC_TLS_CA_PATH).read_bytes()
+
         server_credentials = grpc.ssl_server_credentials(
             private_key_certificate_chain_pairs=[(private_key, certificate_chain)],
             root_certificates=ca_cert,
@@ -129,6 +125,7 @@ async def serve_grpc():
         logger.warning("Sertifika dosyaları bulunamadı, güvensiz gRPC portu kullanılıyor.")
         listen_addr = f'[::]:{settings.KNOWLEDGE_QUERY_SERVICE_GRPC_PORT}'
         server.add_insecure_port(listen_addr)
+    
     app_state.grpc_server = server
     await server.start()
     await server.wait_for_termination()
@@ -138,8 +135,11 @@ async def lifespan(app: FastAPI):
     setup_logging()
     metrics.SERVICE_INFO.info({'version': settings.SERVICE_VERSION})
     logger.info("Knowledge Query Service başlatılıyor", version=settings.SERVICE_VERSION, env=settings.ENV)
+    
     asyncio.create_task(load_dependencies())
+    
     yield
+    
     logger.info("Knowledge Query Service kapatılıyor.")
     if app_state.qdrant_client:
         app_state.qdrant_client.close()
@@ -175,8 +175,6 @@ async def health_check():
     else:
         return Response(content='{"status": "initializing"}', status_code=status.HTTP_503_SERVICE_UNAVAILABLE, headers={"Retry-After": "30"}, media_type="application/json")
 
-# ... (perform_query aynı kalacak, sadece arama kısmında ufak bir kontrol ekleyelim)
-
 async def _perform_query(tenant_id: str, query: str, top_k: int) -> list[schemas.QueryResult]:
     collection_name = f"{settings.QDRANT_DB_COLLECTION_PREFIX}{tenant_id}"
     log = logger.bind(tenant_id=tenant_id, collection=collection_name)
@@ -186,12 +184,13 @@ async def _perform_query(tenant_id: str, query: str, top_k: int) -> list[schemas
 
     try:
         log.info("Sorgu vektörleştiriliyor...")
+        # Encode CPU-bound
         query_vector = await asyncio.to_thread(app_state.embedding_model.encode, query)
         query_vector = query_vector.tolist()
 
         log.info("Vektör veritabanında arama yapılıyor...", top_k=top_k)
         
-        # search metodunu çağıran yardımcı fonksiyon
+        # Sync Client'ı Thread içinde çalıştır (En güvenli yöntem)
         def do_search():
             return app_state.qdrant_client.search(
                 collection_name=collection_name,
@@ -203,7 +202,12 @@ async def _perform_query(tenant_id: str, query: str, top_k: int) -> list[schemas
         search_result = await asyncio.to_thread(do_search)
 
         results = [
-            schemas.QueryResult(content=hit.payload.get("content", ""), score=hit.score, source=hit.payload.get("source_uri", "unknown"), metadata=hit.payload)
+            schemas.QueryResult(
+                content=hit.payload.get("content", ""), 
+                score=hit.score, 
+                source=hit.payload.get("source_uri", "unknown"), 
+                metadata=hit.payload
+            )
             for hit in search_result
         ]
         log.info(f"{len(results)} sonuç bulundu.")
