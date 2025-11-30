@@ -1,5 +1,4 @@
-### 📄 File: Dockerfile (YENİ VE DÜZELTİLMİŞ VERSİYON - v2.2 gRPC Destekli)
-# Bu Dockerfile, hem CPU hem de GPU imajlarını dinamik ve uyumlu bir şekilde oluşturur.
+### 📄 File: Dockerfile (v2.3 - Cache Busting & Clean Install)
 
 # --- Build Argümanları ---
 ARG TARGET_DEVICE=cpu
@@ -31,16 +30,15 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 COPY requirements.txt .
 
-# --- DÜZELTİLMİŞ VE DAHA SAĞLAM BAĞIMLILIK KURULUMU ---
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --upgrade pip && \
+# --- DÜZELTME: --no-cache-dir ve --force-reinstall eklendi ---
+RUN pip install --upgrade pip && \
     if [ "$TARGET_DEVICE" = "gpu" ]; then \
         echo "GPU imajı: PyTorch zaten mevcut, diğer bağımlılıklar kuruluyor."; \
         grep -v 'torch' requirements.txt > requirements.tmp.txt; \
-        pip install --no-cache-dir -r requirements.tmp.txt; \
+        pip install --no-cache-dir --force-reinstall -r requirements.tmp.txt; \
     else \
         echo "CPU imajı: Hafif PyTorch ve diğer bağımlılıklar kuruluyor."; \
-        pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu; \
+        pip install --no-cache-dir --force-reinstall -r requirements.txt; \
     fi
 
 # ==================================
@@ -79,9 +77,6 @@ RUN mkdir -p /app/model-cache && \
 
 USER appuser
 
-# knowledge-query-service için: HTTP, gRPC, ve Metrics portları
 EXPOSE 17020 17021 17022
 
-# knowledge-query-service için:
-# Artık Uvicorn'u doğrudan değil, runner script'i üzerinden başlatıyoruz.
 CMD ["python", "-m", "app.runner"]
