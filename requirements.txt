@@ -12,14 +12,13 @@ sentence-transformers==3.1.1
 qdrant-client==1.12.0
 httpx==0.27.2
 
-# gRPC & Metrics (GÜNCELLEME: Versiyonlar yükseltildi)
+# gRPC & Metrics
+# grpcio son sürümleri modern protobuf ile daha uyumludur
 grpcio==1.68.0
 grpcio-tools==1.68.0
 prometheus-client==0.21.0
 
-# Protobuf Sabitleme (Çatışmayı çözmek için)
-# Hem grpcio hem de contracts ile uyumlu olması muhtemel en yeni 5.x sürümü
-protobuf==5.29.0
-
 # Contracts
+# Bu kütüphane kendi protobuf gereksinimini (>=6.32.0) getirecektir.
+# Manuel müdahale etmiyoruz.
 sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.9.0
