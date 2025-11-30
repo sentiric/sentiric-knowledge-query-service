@@ -9,14 +9,17 @@ structlog==24.4.0
 # AI & DB
 torch==2.4.1 --index-url https://download.pytorch.org/whl/cpu
 sentence-transformers==3.1.1
-# Qdrant Client versiyonunu sabitliyoruz
 qdrant-client==1.12.0
 httpx==0.27.2
 
-# gRPC & Metrics
-grpcio==1.66.1
-grpcio-tools==1.66.1
+# gRPC & Metrics (GÜNCELLEME: Versiyonlar yükseltildi)
+grpcio==1.68.0
+grpcio-tools==1.68.0
 prometheus-client==0.21.0
+
+# Protobuf Sabitleme (Çatışmayı çözmek için)
+# Hem grpcio hem de contracts ile uyumlu olması muhtemel en yeni 5.x sürümü
+protobuf==5.29.0
 
 # Contracts
 sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.9.0
