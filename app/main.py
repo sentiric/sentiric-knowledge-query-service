@@ -7,8 +7,8 @@ from contextlib import asynccontextmanager
 import grpc
 import structlog
 from fastapi import FastAPI, HTTPException, Response, status, Request
-# DEĞİŞİKLİK: AsyncQdrantClient kullanıyoruz
-from qdrant_client import AsyncQdrantClient, models
+# DEĞİŞİKLİK: Async yerine standart QdrantClient (Kararlı)
+from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from sentence_transformers import SentenceTransformer
 
@@ -23,8 +23,8 @@ from sentiric.knowledge.v1 import query_pb2, query_pb2_grpc
 class AppState:
     def __init__(self):
         self.is_ready = False
-        # DEĞİŞİKLİK: Tip ipucu güncellendi
-        self.qdrant_client: AsyncQdrantClient | None = None
+        # DEĞİŞİKLİK: Tip ipucu standart client
+        self.qdrant_client: QdrantClient | None = None
         self.embedding_model: SentenceTransformer | None = None
         self.grpc_server: grpc.aio.Server | None = None
 
@@ -35,18 +35,18 @@ async def load_dependencies():
     """Ağır bağımlılıkları yükler ve durumu günceller."""
     try:
         logger.info("Qdrant istemcisi başlatılıyor...", url=settings.QDRANT_HTTP_URL)
-        # DEĞİŞİKLİK: AsyncQdrantClient başlatıldı
-        client = AsyncQdrantClient(url=settings.QDRANT_HTTP_URL, api_key=settings.QDRANT_API_KEY)
-        
-        # Bağlantı testi (Async)
-        await client.get_collections()
+        # DEĞİŞİKLİK: Standart QdrantClient (Senkron)
+        # Not: Başlangıçta bloklaması sorun değildir (Startup phase)
+        client = QdrantClient(url=settings.QDRANT_HTTP_URL, api_key=settings.QDRANT_API_KEY)
+        client.get_collections()
         
         app_state.qdrant_client = client
-        logger.info("Qdrant bağlantısı başarılı (Async).")
+        logger.info("Qdrant bağlantısı başarılı (Sync Client).")
 
         logger.info(f"Embedding modeli yükleniyor...", model=settings.QDRANT_DB_EMBEDDING_MODEL_NAME)
-        # SentenceTransformer CPU-bound bir işlemdir, başlangıçta senkron çalışmasında sakınca yoktur.
-        model = SentenceTransformer(
+        # Model yükleme işlemini thread'e atıyoruz ki startup timeout yemesin
+        model = await asyncio.to_thread(
+            SentenceTransformer,
             settings.QDRANT_DB_EMBEDDING_MODEL_NAME,
             cache_folder=settings.HF_HOME
         )
@@ -105,11 +105,9 @@ class KnowledgeQueryServicer(query_pb2_grpc.KnowledgeQueryServiceServicer):
             await context.abort(grpc.StatusCode.INTERNAL, "İç sunucu hatası.")
 
 async def serve_grpc():
-    """gRPC sunucusunu başlatır ve yönetir."""
     server = grpc.aio.server(interceptors=[MetricsInterceptor()])
     query_pb2_grpc.add_KnowledgeQueryServiceServicer_to_server(KnowledgeQueryServicer(), server)
     
-    # --- mTLS GÜVENLİK ---
     try:
         private_key = Path(settings.KNOWLEDGE_QUERY_SERVICE_KEY_PATH).read_bytes()
         certificate_chain = Path(settings.KNOWLEDGE_QUERY_SERVICE_CERT_PATH).read_bytes()
@@ -124,14 +122,13 @@ async def serve_grpc():
         server.add_secure_port(listen_addr, server_credentials)
         logger.info("Güvenli (mTLS) gRPC sunucusu başlatılıyor...", address=listen_addr)
     except FileNotFoundError:
-        logger.warning("Sertifika dosyaları bulunamadı, güvensiz gRPC portu kullanılıyor (sadece yerel geliştirme için!).")
+        logger.warning("Sertifika dosyaları bulunamadı, güvensiz gRPC portu kullanılıyor.")
         listen_addr = f'[::]:{settings.KNOWLEDGE_QUERY_SERVICE_GRPC_PORT}'
         server.add_insecure_port(listen_addr)
     
     app_state.grpc_server = server
     await server.start()
     await server.wait_for_termination()
-    logger.info("gRPC sunucusu kapatıldı.")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -145,24 +142,21 @@ async def lifespan(app: FastAPI):
     
     logger.info("Knowledge Query Service kapatılıyor.")
     if app_state.qdrant_client:
-        # DEĞİŞİKLİK: await eklendi
-        await app_state.qdrant_client.close()
+        app_state.qdrant_client.close()
     if app_state.grpc_server:
         await app_state.grpc_server.stop(grace=1)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    description="RAG sorgu motoru (Okuma bacağı). HTTP ve gRPC arayüzleri sağlar.",
+    description="RAG sorgu motoru (Okuma bacağı).",
     version=settings.SERVICE_VERSION,
     lifespan=lifespan
 )
 
-# --- HTTP Metrik Middleware'i ---
 @app.middleware("http")
 async def metrics_middleware(request: Request, call_next):
     start_time = time.perf_counter()
     metrics.REQUESTS_IN_PROGRESS.labels(method='http').inc()
-    
     status_code = 500
     try:
         response = await call_next(request)
@@ -176,19 +170,16 @@ async def metrics_middleware(request: Request, call_next):
 
 @app.get("/health", status_code=status.HTTP_200_OK, tags=["Monitoring"])
 async def health_check():
-    """Model ve DB bağlantısı hazır olduğunda 200, değilse 503 döner."""
     if app_state.is_ready:
         return {"status": "healthy"}
     else:
-        return Response(
-            content='{"status": "initializing"}',
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            headers={"Retry-After": "30"},
-            media_type="application/json"
-        )
+        return Response(content='{"status": "initializing"}', status_code=status.HTTP_503_SERVICE_UNAVAILABLE, headers={"Retry-After": "30"}, media_type="application/json")
 
 async def _perform_query(tenant_id: str, query: str, top_k: int) -> list[schemas.QueryResult]:
-    """Paylaşılan sorgu mantığı."""
+    """
+    Paylaşılan sorgu mantığı (Thread-Safe Wrapper).
+    Senkron QdrantClient'ı thread içinde çalıştırarak Event Loop bloklamasını önler.
+    """
     collection_name = f"{settings.QDRANT_DB_COLLECTION_PREFIX}{tenant_id}"
     log = logger.bind(tenant_id=tenant_id, collection=collection_name)
 
@@ -197,17 +188,23 @@ async def _perform_query(tenant_id: str, query: str, top_k: int) -> list[schemas
 
     try:
         log.info("Sorgu vektörleştiriliyor...")
-        # SentenceTransformer senkron çalışır, CPU-bound işlemdir.
-        query_vector = app_state.embedding_model.encode(query).tolist()
+        # Encode işlemi CPU-bound, thread'e atıyoruz
+        query_vector = await asyncio.to_thread(
+            app_state.embedding_model.encode, 
+            query
+        )
+        query_vector = query_vector.tolist()
 
         log.info("Vektör veritabanında arama yapılıyor...", top_k=top_k)
         
-        # DEĞİŞİKLİK: await eklendi (AsyncQdrantClient.search)
-        search_result = await app_state.qdrant_client.search(
+        # DEĞİŞİKLİK: Sync Client'ı asenkron thread'de çağırıyoruz.
+        # Bu, 'search' metodunun kesinlikle var olduğu standart client'ı kullanır.
+        search_result = await asyncio.to_thread(
+            app_state.qdrant_client.search,
             collection_name=collection_name,
             query_vector=query_vector,
             limit=top_k,
-            with_payload=True,
+            with_payload=True
         )
 
         results = [
@@ -219,17 +216,15 @@ async def _perform_query(tenant_id: str, query: str, top_k: int) -> list[schemas
     except UnexpectedResponse as e:
         if e.status_code == 404:
             log.warning("Koleksiyon bulunamadı.", error=str(e))
-            # Koleksiyon yoksa boş liste dönmek daha güvenlidir, 404 yerine.
-            return [] 
+            return []
         log.error("Qdrant ile iletişimde hata.", http_status=e.status_code, exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Vektör veritabanıyla iletişimde bir sorun oluştu.")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Vektör veritabanı hatası.")
     except Exception as e:
         log.error("Sorgu işlenirken hata.", error=str(e), exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="İç sunucu hatası.")
 
 @app.post(f"{settings.API_V1_STR}/query", response_model=schemas.QueryResponse, tags=["RAG"])
 async def query_knowledge_base(request: schemas.QueryRequest):
-    """Doğal dil sorgusunu vektörleştirir ve Qdrant'ta arama yapar."""
     if not app_state.is_ready:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Servis henüz başlatılıyor.")
     
