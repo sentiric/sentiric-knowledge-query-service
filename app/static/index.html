@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sentiric RAG Playground</title>
+    <style>
+        :root { --primary: #2563eb; --bg: #f8fafc; --card: #ffffff; --text: #1e293b; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 2rem; display: flex; justify-content: center; }
+        .container { width: 100%; max-width: 800px; }
+        h1 { font-size: 1.5rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem; }
+        .badge { background: #dbeafe; color: #1e40af; font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 999px; }
+        
+        .search-box { background: var(--card); padding: 1.5rem; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: grid; gap: 1rem; }
+        input, button { padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 1rem; width: 100%; box-sizing: border-box; }
+        button { background: var(--primary); color: white; border: none; cursor: pointer; font-weight: 600; transition: opacity 0.2s; }
+        button:hover { opacity: 0.9; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        .options { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+        
+        #results { margin-top: 2rem; display: grid; gap: 1rem; }
+        .result-card { background: var(--card); padding: 1.5rem; border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); border-left: 4px solid var(--primary); }
+        .meta { display: flex; justify-content: space-between; font-size: 0.875rem; color: #64748b; margin-bottom: 0.5rem; }
+        .score { font-weight: bold; color: var(--primary); }
+        .content { line-height: 1.6; white-space: pre-wrap; }
+        .source { margin-top: 1rem; font-size: 0.75rem; color: #94a3b8; font-family: monospace; }
+        
+        .loading { text-align: center; color: #64748b; display: none; }
+        .error { background: #fee2e2; color: #991b1b; padding: 1rem; border-radius: 8px; display: none; margin-top: 1rem;}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>
+            🧠 Sentiric RAG Playground
+            <span class="badge">Production Ready</span>
+        </h1>
+        
+        <div class="search-box">
+            <div class="options">
+                <div>
+                    <label style="font-size: 0.875rem; color: #64748b; display: block; margin-bottom: 0.25rem;">Tenant ID</label>
+                    <input type="text" id="tenantId" value="sentiric_demo" placeholder="Örn: sentiric_demo">
+                </div>
+                <div>
+                    <label style="font-size: 0.875rem; color: #64748b; display: block; margin-bottom: 0.25rem;">Top K (Sonuç Sayısı)</label>
+                    <input type="number" id="topK" value="3" min="1" max="10">
+                </div>
+            </div>
+            
+            <div>
+                <label style="font-size: 0.875rem; color: #64748b; display: block; margin-bottom: 0.25rem;">Sorgunuz</label>
+                <input type="text" id="query" placeholder="Platformun temel özellikleri nelerdir?" onkeypress="handleEnter(event)">
+            </div>
+            
+            <button onclick="search()" id="searchBtn">Ara 🔍</button>
+        </div>
+
+        <div id="error" class="error"></div>
+        <div id="loading" class="loading">Vektör veritabanı taranıyor...</div>
+        <div id="results"></div>
+    </div>
+
+    <script>
+        async function search() {
+            const btn = document.getElementById('searchBtn');
+            const loading = document.getElementById('loading');
+            const resultsDiv = document.getElementById('results');
+            const errorDiv = document.getElementById('error');
+            
+            const tenantId = document.getElementById('tenantId').value;
+            const query = document.getElementById('query').value;
+            const topK = parseInt(document.getElementById('topK').value);
+
+            if (!query || !tenantId) return;
+
+            // Reset UI
+            btn.disabled = true;
+            loading.style.display = 'block';
+            resultsDiv.innerHTML = '';
+            errorDiv.style.display = 'none';
+
+            try {
+                const response = await fetch('/api/v1/query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tenant_id: tenantId, query: query, top_k: topK })
+                });
+
+                if (!response.ok) throw new Error(await response.text());
+
+                const data = await response.json();
+                
+                if (data.results.length === 0) {
+                    resultsDiv.innerHTML = '<div style="text-align:center; color:#64748b;">Sonuç bulunamadı.</div>';
+                } else {
+                    data.results.forEach(item => {
+                        const card = document.createElement('div');
+                        card.className = 'result-card';
+                        card.innerHTML = `
+                            <div class="meta">
+                                <span>Skor: <span class="score">${(item.score * 100).toFixed(1)}%</span></span>
+                                <span>Kaynak: ${item.source}</span>
+                            </div>
+                            <div class="content">${item.content}</div>
+                            <div class="source">Metadata: ${JSON.stringify(item.metadata)}</div>
+                        `;
+                        resultsDiv.appendChild(card);
+                    });
+                }
+
+            } catch (err) {
+                errorDiv.textContent = `Hata: ${err.message}`;
+                errorDiv.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                loading.style.display = 'none';
+            }
+        }
+
+        function handleEnter(e) {
+            if (e.key === 'Enter') search();
+        }
+    </script>
+</body>
+</html>

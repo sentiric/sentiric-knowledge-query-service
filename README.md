@@ -33,7 +33,12 @@ Sadece bu servisi ve veritabanını (Qdrant) ayağa kaldırmak için:
 make up
 ```
 
-### 2. Sorgu Yap (cURL / Open Web UI)
+### 2. RAG Playground (UI)
+Tarayıcınızda **`http://localhost:17020`** adresine gidin.
+*   Basit arayüz üzerinden sorgularınızı test edin.
+*   Sonuçların "Skor" (Benzerlik oranı) ve "Kaynak" bilgilerini anında görün.
+
+### 3. API Sorgusu (cURL)
 Servis ayağa kalktığında `http://localhost:17020` adresinden dinler.
 
 **Örnek Sorgu:**

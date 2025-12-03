@@ -5,6 +5,8 @@ import structlog
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, status, Response
+from fastapi.staticfiles import StaticFiles # YENİ
+from fastapi.responses import FileResponse  # YENİ
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
 from app.core.config import settings
@@ -15,13 +17,15 @@ from app.schemas import QueryRequest, QueryResponse
 from app.grpc.service import KnowledgeQueryServicer
 from sentiric.knowledge.v1 import query_pb2_grpc
 
+# ... (Diğer importlar ve grpc_server setup aynı kalıyor) ...
+
 setup_logging()
 logger = structlog.get_logger(__name__)
-
 grpc_server: grpc.aio.Server = None
 
+# ... (start_grpc_server fonksiyonu aynı kalıyor) ...
 async def start_grpc_server():
-    """mTLS veya Insecure modda gRPC sunucusunu başlatır."""
+    # ... (Mevcut kod) ...
     global grpc_server
     grpc_server = grpc.aio.server()
     
@@ -64,11 +68,13 @@ async def start_grpc_server():
         logger.warning("⚠️ Sertifika bulunamadı/tanımlanmadı. INSECURE modda başlatılıyor.")
         grpc_server.add_insecure_port(listen_addr)
 
-    logger.info(f"🚀 gRPC Sunucusu Hazır: {listen_addr}")
+    logger.info(f"🚀 gRPC Server dinliyor: {listen_addr}")
     await grpc_server.start()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # ... (Mevcut kod aynı) ...
     logger.info("Servis Başlatılıyor...", env=settings.ENV)
     
     # 1. Metrikler
@@ -93,8 +99,21 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# --- YENİ: Playground UI Mounting ---
+# static klasörü varsa mount et, yoksa production'da sessizce geç
+static_path = Path("app/static")
+if static_path.exists():
+    app.mount("/static", StaticFiles(directory="app/static"), name="static")
+    
+    @app.get("/", include_in_schema=False)
+    async def root():
+        """Playground arayüzünü sunar."""
+        return FileResponse("app/static/index.html")
+# ----------------------------------
+
 @app.get("/health")
 async def health_check():
+    # ... (Mevcut kod aynı) ...
     if await engine.check_health():
         return {"status": "healthy", "mode": "standalone" if not settings.GRPC_TLS_CA_PATH else "cluster"}
     
@@ -106,6 +125,7 @@ async def health_check():
 
 @app.post(f"{settings.API_V1_STR}/query", response_model=QueryResponse)
 async def query_knowledge_base(request: QueryRequest):
+    # ... (Mevcut kod aynı) ...
     try:
         results = await engine.search(request.tenant_id, request.query, request.top_k)
         return QueryResponse(results=results)
