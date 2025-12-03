@@ -1,12 +1,11 @@
 # app/core/config.py
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
-import os
 
 class Settings(BaseSettings):
     """
-    Servis yapılandırmasını yönetir.
-    Production-Ready kuralı: Varsayılan değerler 'fail-safe' olmalıdır.
+    Servis yapılandırması.
+    Production-Ready: Varsayılanlar güvenli ve hataya dayanıklı.
     """
     # Meta
     PROJECT_NAME: str = "Sentiric Knowledge Query Service"
@@ -22,7 +21,7 @@ class Settings(BaseSettings):
     KNOWLEDGE_QUERY_SERVICE_GRPC_PORT: int = 17021
     KNOWLEDGE_QUERY_SERVICE_METRICS_PORT: int = 17022
 
-    # Security (mTLS) - Opsiyonel hale getirildi (Standalone mod için)
+    # Security (mTLS) - Standalone mod için hepsi Optional
     GRPC_TLS_CA_PATH: Optional[str] = None
     KNOWLEDGE_QUERY_SERVICE_CERT_PATH: Optional[str] = None
     KNOWLEDGE_QUERY_SERVICE_KEY_PATH: Optional[str] = None
@@ -34,13 +33,12 @@ class Settings(BaseSettings):
     QDRANT_DB_COLLECTION_PREFIX: str = "sentiric_kb_"
 
     # AI Models
-    # Bu model Production için dengeli (Hız/Kalite) bir seçimdir.
     QDRANT_DB_EMBEDDING_MODEL_NAME: str = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
     HF_HOME: str = "/app/model-cache"
     
     # Tuning
     KNOWLEDGE_QUERY_DEFAULT_TOP_K: int = 5
-    SCORE_THRESHOLD: float = 0.40 # Bu skorun altındaki sonuçlar elenir (Noise reduction)
+    SCORE_THRESHOLD: float = 0.40
 
     model_config = SettingsConfigDict(
         env_file=".env",
