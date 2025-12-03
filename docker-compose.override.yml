@@ -1,0 +1,11 @@
+services:
+
+  knowledge-query-service:
+    build:
+      context: ../sentiric-knowledge-query-service
+      dockerfile: Dockerfile
+
+  knowledge-indexing-service:
+    build:
+      context: ../sentiric-knowledge-indexing-service
+      dockerfile: Dockerfile

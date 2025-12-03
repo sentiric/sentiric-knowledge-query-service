@@ -1,0 +1,77 @@
+
+volumes:
+  
+  # =============================================================
+  # KATMAN 1: TEMEL ALTYAPI (INFRASTRUCTURE)
+  # Platformun temel yapı taşları.
+  # =============================================================
+
+
+  # [infra]: Vektör veritabanı için standartlaştırılmış Qdrant imajı.
+  # --------------------------------------------------
+  infra-qdrant-data:
+
+  # [infra]: Temel veritabanı (Infrastructure Layer)
+  # --------------------------------------------------  
+  infra-postgres-data:
+
+services:
+  # =============================================================
+  # KATMAN 1: TEMEL ALTYAPI (INFRASTRUCTURE)
+  # Platformun temel yapı taşları.
+  # =============================================================
+
+  # [infra]: Temel veritabanı (Infrastructure Layer)
+  # --------------------------------------------------
+  postgres:
+    image: ghcr.io/sentiric/sentiric-postgres:${TAG:-latest}
+    env_file: ["${ENV_FILE_PATH}"]  
+    volumes:
+      - "${CERTIFICATES_REPO_PATH}:/sentiric-certificates:ro"    
+      - infra-postgres-data:/var/lib/postgresql/data
+      - ./.tmp/postgres-initdb:/docker-entrypoint-initdb.d:ro    
+    ports: 
+      - "${POSTGRES_DB_PORT:-5432}:${POSTGRES_DB_PORT:-5432}"
+    networks:
+      sentiric-net:
+        ipv4_address: ${POSTGRES_IPV4_ADDRESS:-10.88.10.1}
+    dns:
+      - ${DISCOVERY_SERVICE_IPV4_ADDRESS:-10.88.5.1}
+      - ${PRIMARY_DNS:-8.8.8.8}
+      - ${SECONDARY_DNS:-1.1.1.1}    
+    dns_search:
+      - ${DISCOVERY_DNS_SEARCH_DOMAIN}              
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # [infra]: Vektör veritabanı için standartlaştırılmış Qdrant imajı.
+  # --------------------------------------------------
+  qdrant:
+    image: ghcr.io/sentiric/sentiric-qdrant:${TAG:-latest}
+    env_file: ["${ENV_FILE_PATH}"]    
+    volumes: 
+      - "${CERTIFICATES_REPO_PATH}:/sentiric-certificates:ro"    
+      - infra-qdrant-data:/qdrant/storage    
+    ports: 
+      - "${QDRANT_HTTP_PORT:-6333}:${QDRANT_HTTP_PORT:-6333}"
+      - "${QDRANT_GRPC_PORT:-6334}:${QDRANT_GRPC_PORT:-6334}"      
+    networks:
+      sentiric-net:
+        ipv4_address: ${QDRANT_IPV4_ADDRESS:-10.88.10.4}
+    dns:
+      - ${DISCOVERY_SERVICE_IPV4_ADDRESS:-10.88.5.1}
+      - ${PRIMARY_DNS:-8.8.8.8}
+      - ${SECONDARY_DNS:-1.1.1.1}    
+    dns_search:
+      - ${DISCOVERY_DNS_SEARCH_DOMAIN}              
+    restart: always
+    healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+        start_period: 60s  

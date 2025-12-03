@@ -1,229 +1,129 @@
 # app/main.py
 import asyncio
-from pathlib import Path
-import time
-from contextlib import asynccontextmanager
-
 import grpc
 import structlog
-from fastapi import FastAPI, HTTPException, Response, status, Request
-from qdrant_client import QdrantClient
-from qdrant_client.http.exceptions import UnexpectedResponse
-from sentence_transformers import SentenceTransformer
+from contextlib import asynccontextmanager
+from pathlib import Path
+from fastapi import FastAPI, HTTPException, status, Response
+from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
 from app.core.config import settings
 from app.core.logging import setup_logging
+from app.core.engine import engine
 from app.core import metrics
-from app import schemas
+from app.schemas import QueryRequest, QueryResponse
+from app.grpc.service import KnowledgeQueryServicer
+from sentiric.knowledge.v1 import query_pb2_grpc
 
-from sentiric.knowledge.v1 import query_pb2, query_pb2_grpc
-
-class AppState:
-    def __init__(self):
-        self.is_ready = False
-        self.qdrant_client: QdrantClient | None = None
-        self.embedding_model: SentenceTransformer | None = None
-        self.grpc_server: grpc.aio.Server | None = None
-
-app_state = AppState()
+# Logger kurulumu (İlk iş)
+setup_logging()
 logger = structlog.get_logger(__name__)
 
-async def load_dependencies():
-    """Ağır bağımlılıkları yükler ve durumu günceller."""
-    try:
-        logger.info("Qdrant istemcisi başlatılıyor...", url=settings.QDRANT_HTTP_URL)
-        
-        # Sync Client (Thread içinde kullanacağız)
-        client = QdrantClient(url=settings.QDRANT_HTTP_URL, api_key=settings.QDRANT_API_KEY)
-        client.get_collections() # Bağlantı testi
-        
-        app_state.qdrant_client = client
-        logger.info("Qdrant bağlantısı başarılı.")
+# Global gRPC sunucusu referansı
+grpc_server: grpc.aio.Server = None
 
-        logger.info(f"Embedding modeli yükleniyor...", model=settings.QDRANT_DB_EMBEDDING_MODEL_NAME)
-        # Model yükleme (CPU-bound) thread'e devredildi
-        model = await asyncio.to_thread(
-            SentenceTransformer,
-            settings.QDRANT_DB_EMBEDDING_MODEL_NAME,
-            cache_folder=settings.HF_HOME
-        )
-        app_state.embedding_model = model
-        logger.info("Embedding modeli başarıyla yüklendi.")
+async def start_grpc_server():
+    """gRPC sunucusunu başlatır (mTLS veya Insecure)."""
+    global grpc_server
+    grpc_server = grpc.aio.server()
+    
+    # Servisleri ekle
+    query_pb2_grpc.add_KnowledgeQueryServiceServicer_to_server(KnowledgeQueryServicer(), grpc_server)
+    
+    # Health Check Servisi ekle (Consul/Kubernetes için kritik)
+    health_servicer = health.HealthServicer()
+    health_pb2_grpc.add_HealthServicer_to_server(health_servicer, grpc_server)
+    # Tüm servislerin sağlıklı olduğunu işaretle
+    health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
 
-        app_state.is_ready = True
-        logger.info("Tüm bağımlılıklar yüklendi, servis hazır.")
-    except Exception as e:
-        logger.critical("Başlangıç sırasında kritik bir bağımlılık yüklenemedi!", error=str(e), exc_info=True)
-        app_state.is_ready = False
+    listen_addr = f'[::]:{settings.KNOWLEDGE_QUERY_SERVICE_GRPC_PORT}'
 
-# --- gRPC Metrik Interceptor'ı ---
-class MetricsInterceptor(grpc.aio.ServerInterceptor):
-    async def intercept_service(self, continuation, handler_call_details):
-        start_time = time.perf_counter()
-        metrics.REQUESTS_IN_PROGRESS.labels(method='grpc').inc()
-        
-        status_code = grpc.StatusCode.OK
+    # mTLS Yapılandırması
+    if settings.KNOWLEDGE_QUERY_SERVICE_CERT_PATH and Path(settings.KNOWLEDGE_QUERY_SERVICE_CERT_PATH).exists():
+        logger.info("🔒 mTLS ile güvenli gRPC başlatılıyor...")
         try:
-            response = await continuation(handler_call_details)
-            return response
-        except grpc.RpcError as e:
-            status_code = e.code()
-            raise
-        finally:
-            latency = time.perf_counter() - start_time
-            metrics.REQUEST_LATENCY_SECONDS.labels(method='grpc').observe(latency)
-            metrics.REQUESTS_TOTAL.labels(method='grpc', status_code=status_code.name).inc()
-            metrics.REQUESTS_IN_PROGRESS.labels(method='grpc').dec()
-
-class KnowledgeQueryServicer(query_pb2_grpc.KnowledgeQueryServiceServicer):
-    async def Query(self, request: query_pb2.QueryRequest, context: grpc.aio.ServicerContext) -> query_pb2.QueryResponse:
-        if not app_state.is_ready:
-            await context.abort(grpc.StatusCode.UNAVAILABLE, "Servis henüz başlatılıyor.")
-        
-        try:
-            results = await _perform_query(
-                tenant_id=request.tenant_id,
-                query=request.query,
-                top_k=request.top_k if request.top_k > 0 else settings.KNOWLEDGE_QUERY_DEFAULT_TOP_K,
+            private_key = Path(settings.KNOWLEDGE_QUERY_SERVICE_KEY_PATH).read_bytes()
+            certificate_chain = Path(settings.KNOWLEDGE_QUERY_SERVICE_CERT_PATH).read_bytes()
+            ca_cert = Path(settings.GRPC_TLS_CA_PATH).read_bytes()
+            
+            creds = grpc.ssl_server_credentials(
+                [(private_key, certificate_chain)],
+                root_certificates=ca_cert,
+                require_client_auth=True
             )
-            grpc_results = [
-                query_pb2.QueryResult(
-                    content=r.content, 
-                    score=r.score, 
-                    source=r.source, 
-                    metadata=r.metadata
-                )
-                for r in results
-            ]
-            return query_pb2.QueryResponse(results=grpc_results)
-        except HTTPException as e:
-            if e.status_code == 404:
-                await context.abort(grpc.StatusCode.NOT_FOUND, e.detail)
-            else:
-                await context.abort(grpc.StatusCode.INTERNAL, e.detail)
+            grpc_server.add_secure_port(listen_addr, creds)
         except Exception as e:
-            logger.error("gRPC Query hatası", error=str(e), exc_info=True)
-            await context.abort(grpc.StatusCode.INTERNAL, "İç sunucu hatası.")
+             logger.critical("Sertifika hatası! Insecure moda düşülüyor.", error=str(e))
+             grpc_server.add_insecure_port(listen_addr)
+    else:
+        logger.warning("⚠️ Sertifikalar bulunamadı. INSECURE (Güvensiz) gRPC başlatılıyor.")
+        grpc_server.add_insecure_port(listen_addr)
 
-async def serve_grpc():
-    server = grpc.aio.server(interceptors=[MetricsInterceptor()])
-    query_pb2_grpc.add_KnowledgeQueryServiceServicer_to_server(KnowledgeQueryServicer(), server)
-    
-    try:
-        private_key = Path(settings.KNOWLEDGE_QUERY_SERVICE_KEY_PATH).read_bytes()
-        certificate_chain = Path(settings.KNOWLEDGE_QUERY_SERVICE_CERT_PATH).read_bytes()
-        ca_cert = Path(settings.GRPC_TLS_CA_PATH).read_bytes()
-
-        server_credentials = grpc.ssl_server_credentials(
-            private_key_certificate_chain_pairs=[(private_key, certificate_chain)],
-            root_certificates=ca_cert,
-            require_client_auth=True
-        )
-        listen_addr = f'[::]:{settings.KNOWLEDGE_QUERY_SERVICE_GRPC_PORT}'
-        server.add_secure_port(listen_addr, server_credentials)
-        logger.info("Güvenli (mTLS) gRPC sunucusu başlatılıyor...", address=listen_addr)
-    except FileNotFoundError:
-        logger.warning("Sertifika dosyaları bulunamadı, güvensiz gRPC portu kullanılıyor.")
-        listen_addr = f'[::]:{settings.KNOWLEDGE_QUERY_SERVICE_GRPC_PORT}'
-        server.add_insecure_port(listen_addr)
-    
-    app_state.grpc_server = server
-    await server.start()
-    await server.wait_for_termination()
+    logger.info(f"🚀 gRPC Server dinliyor: {listen_addr}")
+    await grpc_server.start()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    setup_logging()
-    metrics.SERVICE_INFO.info({'version': settings.SERVICE_VERSION})
-    logger.info("Knowledge Query Service başlatılıyor", version=settings.SERVICE_VERSION, env=settings.ENV)
+    """Uygulama Yaşam Döngüsü Yönetimi"""
+    # 1. Başlangıç
+    logger.info("Servis Başlatılıyor...", version=settings.SERVICE_VERSION)
     
-    asyncio.create_task(load_dependencies())
+    # Metrics sunucusunu başlat
+    asyncio.create_task(metrics.start_metrics_server())
+    
+    # RAG Engine'i başlat (Model yükleme + DB bağlantısı)
+    await engine.initialize()
+    
+    # gRPC Sunucusunu başlat
+    asyncio.create_task(start_grpc_server())
     
     yield
     
-    logger.info("Knowledge Query Service kapatılıyor.")
-    if app_state.qdrant_client:
-        app_state.qdrant_client.close()
-    if app_state.grpc_server:
-        await app_state.grpc_server.stop(grace=1)
+    # 2. Kapanış (Graceful Shutdown)
+    logger.info("Servis Kapatılıyor...")
+    if grpc_server:
+        await grpc_server.stop(grace=5)
+    await engine.shutdown()
+    logger.info("Güle güle.")
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    description="RAG sorgu motoru (Okuma bacağı).",
     version=settings.SERVICE_VERSION,
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url="/docs" if settings.ENV == "development" else None, # Prod'da Swagger kapatılabilir
+    redoc_url=None
 )
 
-@app.middleware("http")
-async def metrics_middleware(request: Request, call_next):
-    start_time = time.perf_counter()
-    metrics.REQUESTS_IN_PROGRESS.labels(method='http').inc()
-    status_code = 500
-    try:
-        response = await call_next(request)
-        status_code = response.status_code
-        return response
-    finally:
-        latency = time.perf_counter() - start_time
-        metrics.REQUEST_LATENCY_SECONDS.labels(method='http').observe(latency)
-        metrics.REQUESTS_TOTAL.labels(method='http', status_code=status_code).inc()
-        metrics.REQUESTS_IN_PROGRESS.labels(method='http').dec()
-
-@app.get("/health", status_code=status.HTTP_200_OK, tags=["Monitoring"])
+@app.get("/health", tags=["Monitoring"])
 async def health_check():
-    if app_state.is_ready:
-        return {"status": "healthy"}
-    else:
-        return Response(content='{"status": "initializing"}', status_code=status.HTTP_503_SERVICE_UNAVAILABLE, headers={"Retry-After": "30"}, media_type="application/json")
-
-async def _perform_query(tenant_id: str, query: str, top_k: int) -> list[schemas.QueryResult]:
-    collection_name = f"{settings.QDRANT_DB_COLLECTION_PREFIX}{tenant_id}"
-    log = logger.bind(tenant_id=tenant_id, collection=collection_name)
-
-    if not app_state.embedding_model or not app_state.qdrant_client:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Model veya DB istemcisi hazır değil.")
-
-    try:
-        log.info("Sorgu vektörleştiriliyor...")
-        query_vector = await asyncio.to_thread(app_state.embedding_model.encode, query)
-        query_vector = query_vector.tolist()
-
-        log.info("Vektör veritabanında arama yapılıyor...", top_k=top_k)
-        
-        # Sync Client'ı Thread içinde çalıştır
-        search_result = await asyncio.to_thread(
-            app_state.qdrant_client.search,
-            collection_name=collection_name,
-            query_vector=query_vector,
-            limit=top_k,
-            with_payload=True
-        )
-
-        results = [
-            schemas.QueryResult(
-                content=hit.payload.get("content", ""), 
-                score=hit.score, 
-                source=hit.payload.get("source_uri", "unknown"), 
-                metadata=hit.payload
-            )
-            for hit in search_result
-        ]
-        log.info(f"{len(results)} sonuç bulundu.")
-        return results
-    except UnexpectedResponse as e:
-        if e.status_code == 404:
-            log.warning("Koleksiyon bulunamadı.", error=str(e))
-            return []
-        log.error("Qdrant ile iletişimde hata.", http_status=e.status_code, exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Vektör veritabanı hatası.")
-    except Exception as e:
-        log.error("Sorgu işlenirken hata.", error=str(e), exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="İç sunucu hatası.")
-
-@app.post(f"{settings.API_V1_STR}/query", response_model=schemas.QueryResponse, tags=["RAG"])
-async def query_knowledge_base(request: schemas.QueryRequest):
-    if not app_state.is_ready:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Servis henüz başlatılıyor.")
+    """
+    Derin sağlık kontrolü. Load Balancer ve Orchestrator'lar buraya bakar.
+    """
+    is_healthy = await engine.check_health()
+    if is_healthy:
+        return {"status": "healthy", "version": settings.SERVICE_VERSION, "engine": "ready"}
     
-    results = await _perform_query(tenant_id=request.tenant_id, query=request.query, top_k=request.top_k)
-    return schemas.QueryResponse(results=results)
+    # 503 dönmek, trafiğin kesilmesini sağlar (Circuit Breaker mantığı)
+    return Response(
+        content='{"status": "unhealthy", "detail": "Engine not ready"}', 
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE, 
+        media_type="application/json"
+    )
+
+@app.post(f"{settings.API_V1_STR}/query", response_model=QueryResponse, tags=["RAG"])
+async def query_knowledge_base(request: QueryRequest):
+    """
+    HTTP üzerinden RAG sorgusu yapar.
+    """
+    try:
+        results = await engine.search(
+            tenant_id=request.tenant_id, 
+            query_text=request.query, 
+            top_k=request.top_k
+        )
+        return QueryResponse(results=results)
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Servis henüz hazır değil.")
+    except Exception as e:
+        logger.error("HTTP Query hatası", error=str(e))
+        raise HTTPException(status_code=500, detail="Sorgu işlenemedi.")
