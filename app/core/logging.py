@@ -1,4 +1,3 @@
-# sentiric-knowledge-query-service/app/core/logging.py
 import logging
 import sys
 import structlog
@@ -10,6 +9,7 @@ def setup_logging():
     """
     Tüm servislerde kullanılacak standart loglama yapılandırması.
     Ortama göre (development/production) farklı formatlayıcılar kullanır.
+    Gürültücü üçüncü parti kütüphaneleri susturur.
     """
     global _log_setup_done
     if _log_setup_done:
@@ -18,14 +18,13 @@ def setup_logging():
     log_level = settings.LOG_LEVEL.upper()
     env = settings.ENV.lower()
     
-    # --- DEĞİŞİKLİK BAŞLANGICI: Yapılandırma basitleştirildi ---
     logging.basicConfig(format="%(message)s", stream=sys.stdout, level=log_level)
 
     shared_processors = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.TimeStamper(fmt="iso", utc=True), # UTC ZAMAN DAMGASI STANDARDI
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
@@ -42,9 +41,17 @@ def setup_logging():
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
-    # --- DEĞİŞİKLİK SONU ---
     
+    # === GÜRÜLTÜ FİLTRESİ (NOISE FILTER) ===
+    # Bu blok, üçüncü parti kütüphanelerin gereksiz DEBUG loglarını susturur.
+    noisy_loggers = ["httpx", "httpcore", "uvicorn.access", "uvicorn.error"]
+    for logger_name in noisy_loggers:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+        # Propagate'i kapatarak bu logların root logger'a gitmesini engelliyoruz.
+        logging.getLogger(logger_name).propagate = False
+    # ========================================
+
     _log_setup_done = True
     
     logger = structlog.get_logger("sentiric_knowledge_query_service")
-    logger.info("Loglama başarıyla yapılandırıldı.", env=env, log_level=log_level)
+    logger.info("Loglama başarıyla yapılandırıldı.", env=env, log_level=log_level, noise_filter="ACTIVE")

@@ -33,7 +33,9 @@ services:
     env_file: ["${ENV_FILE_PATH}"]    
     volumes: 
       - "${CERTIFICATES_REPO_PATH}:/sentiric-certificates:ro"
-      - knowledge-query-cache:/app/model-cache      
+      - knowledge-query-cache:/app/model-cache  
+    environment:
+      - LOG_LEVEL=DEBUG     
     ports: 
       - "${KNOWLEDGE_QUERY_SERVICE_HTTP_PORT:-17020}:${KNOWLEDGE_QUERY_SERVICE_HTTP_PORT:-17020}"
       - "${KNOWLEDGE_QUERY_SERVICE_GRPC_PORT:-17021}:${KNOWLEDGE_QUERY_SERVICE_GRPC_PORT:-17021}"
