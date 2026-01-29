@@ -25,7 +25,7 @@ grpcio-tools = "^1.64.1"
 # Metrikler için eklendi
 prometheus-client = "^0.20.0"
 # gRPC ve Protobuf bağımlılıkları, kontrat paketinden gelecek.
-sentiric-contracts-py = { git = "https://github.com/sentiric/sentiric-contracts.git", tag = "v1.9.0" }
+sentiric-contracts-py = { git = "https://github.com/sentiric/sentiric-contracts.git", tag = "v1.13.6" }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2.2"
