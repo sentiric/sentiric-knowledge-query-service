@@ -23,3 +23,17 @@
    - Her iki entegrasyon noktasında da asenkron framework'lerde context sızıntılarını önlemek adına işleme başlamadan önce `clear_contextvars()` komutu koşturuldu.
 
 **Durum:** Başarılı (✅). Artık tüm mikroservis zincirinde tek bir isteğin yolculuğu izlenebilir hale geldi.
+
+## Security (mTLS) Compliance Task
+
+**Tarih:** 2026-03-15
+**Servis:** `sentiric-knowledge-query-service`
+**Görev Tipi:** Architectural Compliance (Mimari Uyumluluk)
+**İlgili Kural:** `constraints.yaml` -> "Tüm gRPC tabanlı servisler arası iletişim ZORUNLU OLARAK karşılıklı TLS (mTLS) ile şifrelenmelidir."
+
+### Yapılan İşlemler:
+1. **gRPC Sunucusu (app/main.py):**
+   - Sertifika eksikliği veya okunma hataları durumunda gRPC sunucusunun `insecure` moda otomatik fallback yapması engellendi.
+   - `settings.ENV == "production"` durumlarında, sertifika bulunamazsa sistemin hata vererek (`RuntimeError`) açılışı engellemesi sağlandı. Yalnızca `development` modunda insecure başlatmaya izin veriliyor.
+
+**Durum:** Başarılı (✅). Üretim ortamında şifresiz iletişim ihlali giderilmiştir.

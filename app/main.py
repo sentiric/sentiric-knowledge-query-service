@@ -1,15 +1,15 @@
-# app/main.py (İlgili eklemelerle birlikte güncellenmiş hali)
+# Dosya: app/main.py
 import asyncio
 import grpc
 import structlog
-import uuid # YENİ: Trace ID üretimi için
+import uuid 
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, status, Response, Request # Request YENİ eklendi
+from fastapi import FastAPI, HTTPException, status, Response, Request 
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
-from structlog.contextvars import clear_contextvars, bind_contextvars # YENİ: Log context'i için
+from structlog.contextvars import clear_contextvars, bind_contextvars 
 
 from app.core.config import settings
 from app.core.logging import setup_logging
@@ -23,6 +23,7 @@ setup_logging()
 logger = structlog.get_logger(__name__)
 grpc_server: grpc.aio.Server = None
 
+# [ARCH-COMPLIANCE] constraints.yaml'ın gerektirdiği mTLS zorunluluğu üretim ortamında kesinleştirildi (insecure fallback engellendi).
 async def start_grpc_server():
     global grpc_server
     grpc_server = grpc.aio.server()
@@ -59,11 +60,19 @@ async def start_grpc_server():
             )
             grpc_server.add_secure_port(listen_addr, creds)
         except Exception as e:
-             logger.error("Sertifika yükleme hatası! Insecure moda dönülüyor.", error=str(e))
-             grpc_server.add_insecure_port(listen_addr)
+            if settings.ENV == "production":
+                logger.critical("Sertifika yükleme hatası! Üretim ortamında Insecure porta izin verilmez (constraints.yaml).", error=str(e))
+                raise RuntimeError("mTLS is mandatory in production. System halt.") from e
+            else:
+                logger.error("Sertifika yükleme hatası! Insecure moda dönülüyor.", error=str(e))
+                grpc_server.add_insecure_port(listen_addr)
     else:
-        logger.warning("⚠️ Sertifika bulunamadı/tanımlanmadı. INSECURE modda başlatılıyor.")
-        grpc_server.add_insecure_port(listen_addr)
+        if settings.ENV == "production":
+            logger.critical("⚠️ Sertifika bulunamadı! Üretim ortamında gRPC mTLS ZORUNLUDUR (constraints.yaml).")
+            raise RuntimeError("mTLS certificates are missing. Cannot start insecure gRPC in production.")
+        else:
+            logger.warning("⚠️ Sertifika bulunamadı/tanımlanmadı. INSECURE modda başlatılıyor.")
+            grpc_server.add_insecure_port(listen_addr)
 
     logger.info(f"🚀 gRPC Server dinliyor: {listen_addr}")
     await grpc_server.start()
@@ -89,28 +98,15 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# --- YENİ: HTTP Trace ID Middleware ---
-# Mimari Kural (ARCH-OBSERVABILITY): Tüm senkron ve asenkron iletişimlerde 'trace_id' context propagation ile taşınmalıdır.
 @app.middleware("http")
 async def trace_id_middleware(request: Request, call_next):
-    # 1. Önceki istekten kalan context değişkenlerini temizle (Thread/Async sızıntılarını önler)
     clear_contextvars()
-    
-    # 2. İstemciden gelen 'x-trace-id' var mı kontrol et. Yoksa (sistemin ilk giriş noktasıysa) yeni üret.
     trace_id = request.headers.get("x-trace-id") or uuid.uuid4().hex
-    
-    # 3. trace_id'yi Structlog context'ine bağla. Artık bu isteğe ait tüm loglarda (derin fonksiyonlar dahil) otomatik yazılacak.
     bind_contextvars(trace_id=trace_id)
-    
-    # İstek işleniyor...
     response = await call_next(request)
-    
-    # 4. Yanıt başlıklarına ekleyerek diğer servislerin (veya istemcinin) trace_id'yi bilmesini sağla
     response.headers["x-trace-id"] = trace_id
     return response
-# --------------------------------------
 
-# --- Playground UI Mounting ---
 static_path = Path("app/static")
 if static_path.exists():
     app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -134,7 +130,6 @@ async def health_check():
 async def query_knowledge_base(request: QueryRequest):
     try:
         results = await engine.search(request.tenant_id, request.query, request.top_k)
-        # Log örneği: structlog otomatik olarak trace_id'yi buraya basacak
         logger.info("HTTP sorgusu başarıyla işlendi", tenant_id=request.tenant_id, results_count=len(results))
         return QueryResponse(results=results)
     except Exception as e:
