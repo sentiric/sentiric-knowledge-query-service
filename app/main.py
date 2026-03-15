@@ -1,13 +1,15 @@
-# app/main.py
+# app/main.py (İlgili eklemelerle birlikte güncellenmiş hali)
 import asyncio
 import grpc
 import structlog
+import uuid # YENİ: Trace ID üretimi için
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, status, Response
-from fastapi.staticfiles import StaticFiles # YENİ
-from fastapi.responses import FileResponse  # YENİ
+from fastapi import FastAPI, HTTPException, status, Response, Request # Request YENİ eklendi
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
+from structlog.contextvars import clear_contextvars, bind_contextvars # YENİ: Log context'i için
 
 from app.core.config import settings
 from app.core.logging import setup_logging
@@ -17,15 +19,11 @@ from app.schemas import QueryRequest, QueryResponse
 from app.grpc.service import KnowledgeQueryServicer
 from sentiric.knowledge.v1 import query_pb2_grpc
 
-# ... (Diğer importlar ve grpc_server setup aynı kalıyor) ...
-
 setup_logging()
 logger = structlog.get_logger(__name__)
 grpc_server: grpc.aio.Server = None
 
-# ... (start_grpc_server fonksiyonu aynı kalıyor) ...
 async def start_grpc_server():
-    # ... (Mevcut kod) ...
     global grpc_server
     grpc_server = grpc.aio.server()
     
@@ -40,7 +38,6 @@ async def start_grpc_server():
     listen_addr = f'[::]:{settings.KNOWLEDGE_QUERY_SERVICE_GRPC_PORT}'
 
     # --- AKILLI SERTİFİKA KONTROLÜ ---
-    # Sadece path tanımlıysa VE dosya fiziksel olarak varsa mTLS dene
     certs_available = (
         settings.KNOWLEDGE_QUERY_SERVICE_CERT_PATH and 
         Path(settings.KNOWLEDGE_QUERY_SERVICE_CERT_PATH).exists() and
@@ -71,19 +68,12 @@ async def start_grpc_server():
     logger.info(f"🚀 gRPC Server dinliyor: {listen_addr}")
     await grpc_server.start()
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ... (Mevcut kod aynı) ...
     logger.info("Servis Başlatılıyor...", env=settings.ENV)
     
-    # 1. Metrikler
     asyncio.create_task(metrics.start_metrics_server())
-    
-    # 2. Engine (Model + DB)
     await engine.initialize()
-    
-    # 3. gRPC
     asyncio.create_task(start_grpc_server())
     
     yield
@@ -99,21 +89,38 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# --- YENİ: Playground UI Mounting ---
-# static klasörü varsa mount et, yoksa production'da sessizce geç
+# --- YENİ: HTTP Trace ID Middleware ---
+# Mimari Kural (ARCH-OBSERVABILITY): Tüm senkron ve asenkron iletişimlerde 'trace_id' context propagation ile taşınmalıdır.
+@app.middleware("http")
+async def trace_id_middleware(request: Request, call_next):
+    # 1. Önceki istekten kalan context değişkenlerini temizle (Thread/Async sızıntılarını önler)
+    clear_contextvars()
+    
+    # 2. İstemciden gelen 'x-trace-id' var mı kontrol et. Yoksa (sistemin ilk giriş noktasıysa) yeni üret.
+    trace_id = request.headers.get("x-trace-id") or uuid.uuid4().hex
+    
+    # 3. trace_id'yi Structlog context'ine bağla. Artık bu isteğe ait tüm loglarda (derin fonksiyonlar dahil) otomatik yazılacak.
+    bind_contextvars(trace_id=trace_id)
+    
+    # İstek işleniyor...
+    response = await call_next(request)
+    
+    # 4. Yanıt başlıklarına ekleyerek diğer servislerin (veya istemcinin) trace_id'yi bilmesini sağla
+    response.headers["x-trace-id"] = trace_id
+    return response
+# --------------------------------------
+
+# --- Playground UI Mounting ---
 static_path = Path("app/static")
 if static_path.exists():
     app.mount("/static", StaticFiles(directory="app/static"), name="static")
     
     @app.get("/", include_in_schema=False)
     async def root():
-        """Playground arayüzünü sunar."""
         return FileResponse("app/static/index.html")
-# ----------------------------------
 
 @app.get("/health")
 async def health_check():
-    # ... (Mevcut kod aynı) ...
     if await engine.check_health():
         return {"status": "healthy", "mode": "standalone" if not settings.GRPC_TLS_CA_PATH else "cluster"}
     
@@ -125,9 +132,10 @@ async def health_check():
 
 @app.post(f"{settings.API_V1_STR}/query", response_model=QueryResponse)
 async def query_knowledge_base(request: QueryRequest):
-    # ... (Mevcut kod aynı) ...
     try:
         results = await engine.search(request.tenant_id, request.query, request.top_k)
+        # Log örneği: structlog otomatik olarak trace_id'yi buraya basacak
+        logger.info("HTTP sorgusu başarıyla işlendi", tenant_id=request.tenant_id, results_count=len(results))
         return QueryResponse(results=results)
     except Exception as e:
         logger.error("API Query Hatası", error=str(e))
