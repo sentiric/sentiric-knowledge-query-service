@@ -1,22 +1,20 @@
 # app/grpc/service.py
 import grpc
 import structlog
-import uuid # YENİ: Trace ID üretimi için
-from structlog.contextvars import clear_contextvars, bind_contextvars # YENİ: Log context için
+import uuid 
+from structlog.contextvars import clear_contextvars, bind_contextvars
 
 from sentiric.knowledge.v1 import query_pb2, query_pb2_grpc
 from app.core.engine import engine
 from app.core.config import settings
 
-logger = structlog.get_logger(__name__)
+logger = structlog.get_logger()
 
 class KnowledgeQueryServicer(query_pb2_grpc.KnowledgeQueryServiceServicer):
     async def Query(self, request: query_pb2.QueryRequest, context: grpc.aio.ServicerContext) -> query_pb2.QueryResponse:
         
-        # --- YENİ: gRPC Trace ID Extraction (Mimari Kural Uygulaması) ---
-        clear_contextvars() # Her yeni çağrıda context'i temizle
+        clear_contextvars()
         
-        # Metadata'dan 'x-trace-id' yakala (Tuple formatında gelir)
         metadata = context.invocation_metadata()
         trace_id = None
         if metadata:
@@ -25,32 +23,29 @@ class KnowledgeQueryServicer(query_pb2_grpc.KnowledgeQueryServiceServicer):
                     trace_id = value
                     break
         
-        # Yoksa yeni bir trace_id üret
         if not trace_id:
             trace_id = uuid.uuid4().hex
             
-        # Loglama context'ine kaydet (Bu noktadan sonraki tüm engine.search vb. loglarında trace_id olacak)
-        bind_contextvars(trace_id=trace_id)
-        # ----------------------------------------------------------------
+        # [ARCH-COMPLIANCE] AI Streaming Compliance & Context Propagation
+        span_id = uuid.uuid4().hex
+        bind_contextvars(trace_id=trace_id, span_id=span_id, tenant_id=request.tenant_id)
+        
+        logger.info("gRPC Query request received", event_name="RPC_QUERY_RECEIVED", tenant_id=request.tenant_id)
 
-        logger.info("gRPC Query isteği alındı", tenant_id=request.tenant_id)
-
-        # Basit validasyon
         if not request.tenant_id or not request.query:
-             logger.warning("Eksik parametre ile sorgu isteği")
+             logger.warning("Missing parameters in query request", event_name="RPC_INVALID_ARGUMENT")
              await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Eksik parametreler.")
 
         try:
             limit = request.top_k if request.top_k > 0 else settings.KNOWLEDGE_QUERY_DEFAULT_TOP_K
             
-            # Engine'i çağır
+            logger.info("Executing RAG Search...", event_name="RAG_SEARCH_START", top_k=limit)
             results = await engine.search(
                 tenant_id=request.tenant_id,
                 query_text=request.query,
                 top_k=limit
             )
             
-            # Proto'ya çevir
             proto_results = [
                 query_pb2.QueryResult(
                     content=r.content,
@@ -60,9 +55,14 @@ class KnowledgeQueryServicer(query_pb2_grpc.KnowledgeQueryServiceServicer):
                 ) for r in results
             ]
             
-            logger.info("gRPC Query başarıyla tamamlandı", results_count=len(proto_results))
+            logger.info("gRPC Query completed successfully", event_name="RPC_QUERY_SUCCESS", results_count=len(proto_results))
             return query_pb2.QueryResponse(results=proto_results)
 
+        except TimeoutError:
+            logger.error("RAG engine timed out", event_name="RPC_QUERY_TIMEOUT")
+            await context.abort(grpc.StatusCode.DEADLINE_EXCEEDED, "Vector DB timeout")
         except Exception as e:
-            logger.error("gRPC Hatası", error=str(e))
+            logger.error("gRPC Internal Error", event_name="RPC_QUERY_ERROR", error=str(e), exc_info=True)
             await context.abort(grpc.StatusCode.INTERNAL, "Sunucu hatası")
+        finally:
+            clear_contextvars()

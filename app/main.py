@@ -1,5 +1,6 @@
-# Dosya: app/main.py
+# app/main.py
 import asyncio
+import sys
 import grpc
 import structlog
 import uuid 
@@ -20,25 +21,21 @@ from app.grpc.service import KnowledgeQueryServicer
 from sentiric.knowledge.v1 import query_pb2_grpc
 
 setup_logging()
-logger = structlog.get_logger(__name__)
+logger = structlog.get_logger()
 grpc_server: grpc.aio.Server = None
 
-# [ARCH-COMPLIANCE] constraints.yaml'ın gerektirdiği mTLS zorunluluğu üretim ortamında kesinleştirildi (insecure fallback engellendi).
 async def start_grpc_server():
     global grpc_server
     grpc_server = grpc.aio.server()
     
-    # Servisleri Kaydet
     query_pb2_grpc.add_KnowledgeQueryServiceServicer_to_server(KnowledgeQueryServicer(), grpc_server)
     
-    # Standart gRPC Health Check (Consul/K8s için)
     health_servicer = health.HealthServicer()
     health_pb2_grpc.add_HealthServicer_to_server(health_servicer, grpc_server)
     health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
 
     listen_addr = f'[::]:{settings.KNOWLEDGE_QUERY_SERVICE_GRPC_PORT}'
 
-    # --- AKILLI SERTİFİKA KONTROLÜ ---
     certs_available = (
         settings.KNOWLEDGE_QUERY_SERVICE_CERT_PATH and 
         Path(settings.KNOWLEDGE_QUERY_SERVICE_CERT_PATH).exists() and
@@ -47,7 +44,7 @@ async def start_grpc_server():
     )
 
     if certs_available:
-        logger.info("🔒 Sertifikalar bulundu, mTLS başlatılıyor...")
+        logger.info("Certificates found, initializing mTLS...", event_name="GRPC_MTLS_INIT")
         try:
             private_key = Path(settings.KNOWLEDGE_QUERY_SERVICE_KEY_PATH).read_bytes()
             cert_chain = Path(settings.KNOWLEDGE_QUERY_SERVICE_CERT_PATH).read_bytes()
@@ -61,25 +58,26 @@ async def start_grpc_server():
             grpc_server.add_secure_port(listen_addr, creds)
         except Exception as e:
             if settings.ENV == "production":
-                logger.critical("Sertifika yükleme hatası! Üretim ortamında Insecure porta izin verilmez (constraints.yaml).", error=str(e))
-                raise RuntimeError("mTLS is mandatory in production. System halt.") from e
+                logger.fatal(f"Certificate load error. Insecure mode forbidden in production. Error: {e}", event_name="MTLS_CONFIG_ERROR")
+                sys.exit(1) # [ARCH-COMPLIANCE] Crash instead of silent degradation
             else:
-                logger.error("Sertifika yükleme hatası! Insecure moda dönülüyor.", error=str(e))
+                logger.error("Certificate load error. Reverting to insecure mode.", event_name="MTLS_FALLBACK", error=str(e))
                 grpc_server.add_insecure_port(listen_addr)
     else:
         if settings.ENV == "production":
-            logger.critical("⚠️ Sertifika bulunamadı! Üretim ortamında gRPC mTLS ZORUNLUDUR (constraints.yaml).")
-            raise RuntimeError("mTLS certificates are missing. Cannot start insecure gRPC in production.")
+            logger.fatal("Certificates missing! mTLS is MANDATORY in production.", event_name="MTLS_MISSING_FATAL")
+            sys.exit(1) # [ARCH-COMPLIANCE]
         else:
-            logger.warning("⚠️ Sertifika bulunamadı/tanımlanmadı. INSECURE modda başlatılıyor.")
+            logger.warning("Certificates missing. Starting in INSECURE mode.", event_name="GRPC_INSECURE_START")
             grpc_server.add_insecure_port(listen_addr)
 
-    logger.info(f"🚀 gRPC Server dinliyor: {listen_addr}")
+    logger.info(f"gRPC Server listening on: {listen_addr}", event_name="GRPC_SERVER_STARTED")
     await grpc_server.start()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Servis Başlatılıyor...", env=settings.ENV)
+    structlog.contextvars.bind_contextvars(trace_id=str(uuid.uuid4()))
+    logger.info("Service Booting Up", event_name="SYSTEM_STARTUP", version=settings.SERVICE_VERSION, env=settings.ENV)
     
     asyncio.create_task(metrics.start_metrics_server())
     await engine.initialize()
@@ -87,7 +85,7 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    logger.info("Servis Kapatılıyor...")
+    logger.info("Service Shutting Down", event_name="SERVICE_STOPPED")
     if grpc_server:
         await grpc_server.stop(grace=5)
     await engine.shutdown()
@@ -102,7 +100,10 @@ app = FastAPI(
 async def trace_id_middleware(request: Request, call_next):
     clear_contextvars()
     trace_id = request.headers.get("x-trace-id") or uuid.uuid4().hex
-    bind_contextvars(trace_id=trace_id)
+    # [ARCH-COMPLIANCE] HTTP katmanı için de ayrı Span üretimi
+    span_id = uuid.uuid4().hex
+    
+    bind_contextvars(trace_id=trace_id, span_id=span_id)
     response = await call_next(request)
     response.headers["x-trace-id"] = trace_id
     return response
@@ -128,10 +129,15 @@ async def health_check():
 
 @app.post(f"{settings.API_V1_STR}/query", response_model=QueryResponse)
 async def query_knowledge_base(request: QueryRequest):
+    bind_contextvars(tenant_id=request.tenant_id)
     try:
+        logger.info("HTTP Query request received", event_name="HTTP_QUERY_RECEIVED")
         results = await engine.search(request.tenant_id, request.query, request.top_k)
-        logger.info("HTTP sorgusu başarıyla işlendi", tenant_id=request.tenant_id, results_count=len(results))
+        logger.info("HTTP Query processed successfully", event_name="HTTP_QUERY_SUCCESS", results_count=len(results))
         return QueryResponse(results=results)
+    except TimeoutError:
+        logger.error("RAG Engine Timed Out", event_name="HTTP_QUERY_TIMEOUT")
+        raise HTTPException(status_code=504, detail="Vector Database Timeout")
     except Exception as e:
-        logger.error("API Query Hatası", error=str(e))
-        raise HTTPException(status_code=500, detail="Internal Error")
+        logger.error("API Query Error", event_name="HTTP_QUERY_ERROR", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal Server Error")

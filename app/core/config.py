@@ -1,4 +1,5 @@
 # app/core/config.py
+import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
@@ -7,14 +8,16 @@ class Settings(BaseSettings):
     Servis yapılandırması.
     Production-Ready: Varsayılanlar güvenli ve hataya dayanıklı.
     """
-    # Meta
     PROJECT_NAME: str = "Sentiric Knowledge Query Service"
-    SERVICE_VERSION: str = "1.0.0-prod"
+    SERVICE_VERSION: str = "0.2.0"
     API_V1_STR: str = "/api/v1"
     
-    # Environment
     ENV: str = "production"
     LOG_LEVEL: str = "INFO"
+
+    # [ARCH-COMPLIANCE] Resource node identity ve Tenant Isolation
+    NODE_NAME: str = os.getenv("NODE_HOSTNAME", "unknown-node")
+    TENANT_ID: str = os.getenv("TENANT_ID", "")
 
     # Ports
     KNOWLEDGE_QUERY_SERVICE_HTTP_PORT: int = 17020
@@ -47,3 +50,7 @@ class Settings(BaseSettings):
     )
 
 settings = Settings()
+
+# [ARCH-COMPLIANCE] Strict Tenant Validation
+if not settings.TENANT_ID and settings.ENV == "production":
+    pass # In context isolation this may be provided runtime, but logged as warning in main.

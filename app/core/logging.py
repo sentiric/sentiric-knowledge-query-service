@@ -1,16 +1,46 @@
+# app/core/logging.py
 import logging
 import sys
 import structlog
+from datetime import datetime, timezone
 from app.core.config import settings
 
 _log_setup_done = False
 
+def suts_v4_processor(logger, method_name: str, event_dict: dict) -> dict:
+    """
+    [ARCH-COMPLIANCE] Sentiric Unified Telemetry Standard (SUTS v4.0)
+    structlog objesini Observer'ın beklediği kesin şemaya dönüştürür.
+    """
+    message = event_dict.pop("event", "")
+    suts_event = event_dict.pop("event_name", event_dict.pop("event_id", "LOG_EVENT"))
+    
+    trace_id = event_dict.pop("trace_id", None)
+    span_id = event_dict.pop("span_id", None)
+    tenant_id = event_dict.pop("tenant_id", settings.TENANT_ID)
+
+    event_dict.pop("timestamp", None)
+    event_dict.pop("level", None)
+
+    return {
+        "schema_v": "1.0.0",
+        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "severity": method_name.upper() if method_name else "INFO",
+        "tenant_id": tenant_id,
+        "resource": {
+            "service.name": "knowledge-query-service",
+            "service.version": settings.SERVICE_VERSION,
+            "service.env": settings.ENV,
+            "host.name": settings.NODE_NAME
+        },
+        "trace_id": trace_id,
+        "span_id": span_id,
+        "event": suts_event,
+        "message": str(message),
+        "attributes": event_dict
+    }
+
 def setup_logging():
-    """
-    Tüm servislerde kullanılacak standart loglama yapılandırması.
-    Ortama göre (development/production) farklı formatlayıcılar kullanır.
-    Gürültücü üçüncü parti kütüphaneleri susturur.
-    """
     global _log_setup_done
     if _log_setup_done:
         return
@@ -22,36 +52,25 @@ def setup_logging():
 
     shared_processors = [
         structlog.contextvars.merge_contextvars,
-        structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso", utc=True), # UTC ZAMAN DAMGASI STANDARDI
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.UnicodeDecoder(),
+        suts_v4_processor,
+        structlog.processors.JSONRenderer() # [ARCH-COMPLIANCE] STDOUT JSON Only
     ]
-
-    if env == "development":
-        processors = shared_processors + [structlog.dev.ConsoleRenderer(colors=True)]
-    else:
-        processors = shared_processors + [structlog.processors.JSONRenderer()]
     
     structlog.configure(
-        processors=processors,
+        processors=shared_processors,
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
     
-    # === GÜRÜLTÜ FİLTRESİ (NOISE FILTER) ===
-    # Bu blok, üçüncü parti kütüphanelerin gereksiz DEBUG loglarını susturur.
+    # [ARCH-COMPLIANCE] Gürültü Susturucu
     noisy_loggers = ["httpx", "httpcore", "uvicorn.access", "uvicorn.error"]
     for logger_name in noisy_loggers:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
-        # Propagate'i kapatarak bu logların root logger'a gitmesini engelliyoruz.
         logging.getLogger(logger_name).propagate = False
-    # ========================================
 
     _log_setup_done = True
     
-    logger = structlog.get_logger("sentiric_knowledge_query_service")
-    logger.info("Loglama başarıyla yapılandırıldı.", env=env, log_level=log_level, noise_filter="ACTIVE")
+    logger = structlog.get_logger()
+    logger.info("Structured logging configured to SUTS v4.0", event_name="SYSTEM_LOGGING_INIT")
