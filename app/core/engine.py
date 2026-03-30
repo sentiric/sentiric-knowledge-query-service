@@ -20,24 +20,23 @@ class RAGEngine:
         try:
             logger.info("RAG Engine: Başlatılıyor...", event_name="RAG_ENGINE_START")
 
-            # [ARCH-COMPLIANCE] Device tespiti ve explicit allocation
+            # [MİMARİ DÜZELTME] Cihazı Main Thread'de belirle
             device = "cuda" if torch.cuda.is_available() else "cpu"
             
             logger.info(
-                "Model yükleniyor...", 
-                event_name="MODEL_LOADING_START", 
+                "Model Ana Thread üzerinde yükleniyor...", 
+                event_name="MODEL_LOADING_SYNC", 
                 model=settings.QDRANT_DB_EMBEDDING_MODEL_NAME,
                 device=device
             )
-            
-            if device == "cpu":
-                logger.warning("GPU bulunamadı! RAG modeli CPU üzerinde çalışacak. RAM Thread limitlerinin devrede olduğundan emin olun.", event_name="RAG_GPU_MISSING")
 
-            self.model = await asyncio.to_thread(
-                SentenceTransformer,
+            # 🚨 KRİTİK DEĞİŞİKLİK: asyncio.to_thread KALDIRILDI! 🚨
+            # PyTorch CUDA Context KESİNLİKLE ana thread'de (senkron) oluşturulmalıdır.
+            # Aksi halde Linux Kernel'i OOM krizine sokan VRAM-to-RAM sızıntısı oluşur.
+            self.model = SentenceTransformer(
                 settings.QDRANT_DB_EMBEDDING_MODEL_NAME,
                 cache_folder=settings.HF_HOME,
-                device=device # [EKLENDİ] Modelin GPU'ya zorlanması garanti altına alındı
+                device=device
             )
             
             logger.info(f"Qdrant'a bağlanılıyor...", event_name="DB_CONNECTING", url=settings.QDRANT_HTTP_URL)
@@ -45,8 +44,8 @@ class RAGEngine:
                 url=settings.QDRANT_HTTP_URL,
                 api_key=settings.QDRANT_API_KEY
             )
-            
-            # [ARCH-COMPLIANCE] Timeout Protection
+
+            # [ARCH-COMPLIANCE] Timeout Protection            
             colls = await asyncio.wait_for(self.qdrant.get_collections(), timeout=10.0)
             logger.info("Qdrant bağlantısı başarılı.", event_name="DB_CONNECTED", collections_count=len(colls.collections))
 
