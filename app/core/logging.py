@@ -1,12 +1,36 @@
 # app/core/logging.py
 import logging
-import logging.config
 import sys
+import os
+import uuid
 import structlog
 from datetime import datetime, timezone
 from app.core.config import settings
 
 _log_setup_done = False
+
+# [ARCH-COMPLIANCE] C kütüphanelerinin ve third-party'lerin RAW string basmasını engelle
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["GRPC_VERBOSITY"] = "ERROR"
+
+class InterceptHandler(logging.Handler):
+    """Standart Python loglarını Structlog JSON yapısına çevirir (Anti-RAW)"""
+    def emit(self, record):
+        level_name = logging.getLevelName(record.levelno).lower()
+        logger = structlog.get_logger(record.name)
+        log_method = getattr(logger, level_name, logger.info)
+        
+        kwargs = {}
+        if record.exc_info:
+            kwargs["exc_info"] = record.exc_info
+
+        log_method(
+            record.getMessage(),
+            event_name="THIRD_PARTY_LOG",
+            logger_name=record.name,
+            **kwargs
+        )
 
 def suts_v4_processor(logger, method_name: str, event_dict: dict) -> dict:
     message = event_dict.pop("event", "")
@@ -15,6 +39,12 @@ def suts_v4_processor(logger, method_name: str, event_dict: dict) -> dict:
     trace_id = event_dict.pop("trace_id", None)
     span_id = event_dict.pop("span_id", None)
     tenant_id = event_dict.pop("tenant_id", settings.TENANT_ID)
+
+    # [ARCH-COMPLIANCE] Strict SUTS v4.0 - trace_id ve span_id null olamaz.
+    if not trace_id:
+        trace_id = "00000000-0000-0000-0000-000000000000"
+    if not span_id:
+        span_id = str(uuid.uuid4())
 
     event_dict.pop("timestamp", None)
     event_dict.pop("level", None)
@@ -45,28 +75,24 @@ def setup_logging():
 
     log_level = settings.LOG_LEVEL.upper()
 
-    # 1. Kök Logger Yapılandırması
-    logging.basicConfig(format="%(message)s", stream=sys.stdout, level=log_level)
-
-    # 2. Python Warnings Yakalama (Qdrant insecure warning vb.)
+    # 1. Kök Logger Intercept Yapılandırması
+    logging.basicConfig(handlers=[InterceptHandler()], level=log_level, force=True)
     logging.captureWarnings(True)
 
-    # 3. Uvicorn ve FastAPI Loglarını Root Logger'a Yönlendirme (Hijack)
-    intercept_loggers = ["uvicorn", "uvicorn.access", "uvicorn.error", "fastapi"]
+    # 2. Uvicorn, FastAPI, gRPC ve Asyncio loglarını hijack et
+    intercept_loggers = [
+        "uvicorn", "uvicorn.access", "uvicorn.error", 
+        "fastapi", "grpc", "_cygrpc", "asyncio"
+    ]
     for logger_name in intercept_loggers:
         l = logging.getLogger(logger_name)
-        l.handlers.clear()
-        l.propagate = True
+        l.handlers = [InterceptHandler()]
+        l.propagate = False
 
-    # 4. Gürültücü Kütüphaneleri Susturma (Sadece ERROR fırlatırlarsa logla)
+    # 3. Gürültücü Kütüphaneleri Susturma
     noisy_loggers = [
-        "httpx", 
-        "httpcore", 
-        "urllib3", 
-        "qdrant_client", 
-        "huggingface_hub", 
-        "sentence_transformers",
-        "py.warnings" # Warning'ler JSON'a akar ama gereksiz olanları filtrelemek için ERROR yapılabilir, ancak captureWarnings(True) kullandığımız için devrede kalsın.
+        "httpx", "httpcore", "urllib3", "qdrant_client", 
+        "huggingface_hub", "sentence_transformers", "transformers", "py.warnings"
     ]
     for n in noisy_loggers:
         logging.getLogger(n).setLevel(logging.ERROR)

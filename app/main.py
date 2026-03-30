@@ -76,7 +76,9 @@ async def start_grpc_server():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    structlog.contextvars.bind_contextvars(trace_id=str(uuid.uuid4()))
+    clear_contextvars()
+    # [ARCH-COMPLIANCE] Explicit span_id allocation for system initialization
+    structlog.contextvars.bind_contextvars(trace_id=str(uuid.uuid4()), span_id=str(uuid.uuid4()))
     logger.info("Service Booting Up", event_name="SYSTEM_STARTUP", version=settings.SERVICE_VERSION, env=settings.ENV)
     
     asyncio.create_task(metrics.start_metrics_server())
@@ -89,6 +91,7 @@ async def lifespan(app: FastAPI):
     if grpc_server:
         await grpc_server.stop(grace=5)
     await engine.shutdown()
+    clear_contextvars()
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -100,7 +103,6 @@ app = FastAPI(
 async def trace_id_middleware(request: Request, call_next):
     clear_contextvars()
     trace_id = request.headers.get("x-trace-id") or uuid.uuid4().hex
-    # [ARCH-COMPLIANCE] HTTP katmanı için de ayrı Span üretimi
     span_id = uuid.uuid4().hex
     
     bind_contextvars(trace_id=trace_id, span_id=span_id)

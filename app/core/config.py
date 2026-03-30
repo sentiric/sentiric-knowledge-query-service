@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     Production-Ready: Varsayılanlar güvenli ve hataya dayanıklı.
     """
     PROJECT_NAME: str = "Sentiric Knowledge Query Service"
-    SERVICE_VERSION: str = "0.2.0"
+    SERVICE_VERSION: str = "0.4.0" # [ARCH-COMPLIANCE] Versiyon uyumlandırıldı
     API_V1_STR: str = "/api/v1"
     
     ENV: str = "production"
