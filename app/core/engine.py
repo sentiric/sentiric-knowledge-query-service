@@ -1,6 +1,7 @@
 # app/core/engine.py
 import asyncio
 import structlog
+import torch # [EKLENDİ]
 from typing import List, Optional
 from sentence_transformers import SentenceTransformer
 from qdrant_client import AsyncQdrantClient
@@ -19,11 +20,24 @@ class RAGEngine:
         try:
             logger.info("RAG Engine: Başlatılıyor...", event_name="RAG_ENGINE_START")
 
-            logger.info(f"Model yükleniyor...", event_name="MODEL_LOADING_START", model=settings.QDRANT_DB_EMBEDDING_MODEL_NAME)
+            # [ARCH-COMPLIANCE] Device tespiti ve explicit allocation
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            
+            logger.info(
+                "Model yükleniyor...", 
+                event_name="MODEL_LOADING_START", 
+                model=settings.QDRANT_DB_EMBEDDING_MODEL_NAME,
+                device=device
+            )
+            
+            if device == "cpu":
+                logger.warning("GPU bulunamadı! RAG modeli CPU üzerinde çalışacak. RAM Thread limitlerinin devrede olduğundan emin olun.", event_name="RAG_GPU_MISSING")
+
             self.model = await asyncio.to_thread(
                 SentenceTransformer,
                 settings.QDRANT_DB_EMBEDDING_MODEL_NAME,
-                cache_folder=settings.HF_HOME
+                cache_folder=settings.HF_HOME,
+                device=device # [EKLENDİ] Modelin GPU'ya zorlanması garanti altına alındı
             )
             
             logger.info(f"Qdrant'a bağlanılıyor...", event_name="DB_CONNECTING", url=settings.QDRANT_HTTP_URL)

@@ -63,6 +63,7 @@ ARG BUILD_DATE="unknown"
 ARG SERVICE_VERSION="0.0.0"
 
 # [ARCH-COMPLIANCE] HF_HUB_DISABLE_PROGRESS_BARS eklendi! JSON logları parçalamaması için şarttır.
+# [ARCH-COMPLIANCE] PyTorch CPU Fallback RAM Explosion Protection eklendi
 ENV GIT_COMMIT=${GIT_COMMIT} \
     BUILD_DATE=${BUILD_DATE} \
     SERVICE_VERSION=${SERVICE_VERSION} \
@@ -70,7 +71,10 @@ ENV GIT_COMMIT=${GIT_COMMIT} \
     PATH="/opt/venv/bin:$PATH" \
     HF_HOME="/app/model-cache" \
     HF_HUB_DISABLE_PROGRESS_BARS=1 \
-    TOKENIZERS_PARALLELISM=false
+    TOKENIZERS_PARALLELISM=false \
+    OMP_NUM_THREADS=4 \
+    MKL_NUM_THREADS=4 \
+    PYTORCH_OPENMP_THREADS=4
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     netcat-openbsd \
