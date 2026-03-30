@@ -1,6 +1,5 @@
-# app/core/logging.py
 import logging
-import sys
+import sys # [EKLENDİ] Doğrudan stdout'a yazmak için gerekli
 import os
 import uuid
 import structlog
@@ -8,6 +7,7 @@ from datetime import datetime, timezone
 from app.core.config import settings
 
 _log_setup_done = False
+
 
 # [ARCH-COMPLIANCE] C kütüphanelerinin ve third-party'lerin RAW string basmasını engelle
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
@@ -99,15 +99,18 @@ def setup_logging():
 
     shared_processors = [
         structlog.contextvars.merge_contextvars,
-        structlog.stdlib.add_log_level,
+        structlog.processors.add_log_level, # [DÜZELTME]: stdlib.add_log_level yerine evrensel olanı kullanıyoruz
         suts_v4_processor,
         structlog.processors.JSONRenderer() 
     ]
 
+    # [KRİTİK DÜZELTME]: SONSUZ DÖNGÜ (INFINITE RECURSION) ENGELLENDİ!
     structlog.configure(
         processors=shared_processors,
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        wrapper_class=structlog.stdlib.BoundLogger,
+        # Eski hatalı kod: logger_factory=structlog.stdlib.LoggerFactory(),
+        # Yeni ve Güvenli Kod: Logları doğrudan konsola (sys.stdout) yaz!
+        logger_factory=structlog.WriteLoggerFactory(file=sys.stdout),
+        wrapper_class=structlog.make_filtering_bound_logger(getattr(logging, log_level)),
         cache_logger_on_first_use=True,
     )
     

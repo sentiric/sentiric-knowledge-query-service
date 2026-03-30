@@ -19,15 +19,14 @@ async def main():
     structlog.contextvars.bind_contextvars(trace_id=str(uuid.uuid4()), span_id=str(uuid.uuid4()))
     logger.info("Starting background services...", event_name="SYSTEM_INIT")
     
-    # [ARCH-COMPLIANCE] Override Uvicorn default logging configuration to prevent RAW leaks
-    log_config = uvicorn.config.LOGGING_CONFIG.copy()
-    log_config["handlers"] = {} # Disable standard handlers
-    
+    # [KRİTİK DÜZELTME]: Uvicorn'un dictConfig kullanarak çökmesini engelleriz.
+    # log_config=None diyerek, Uvicorn'un kendi logging ayarlarını ezmesini yasaklıyoruz.
+    # Böylece loglar, app/core/logging.py içindeki InterceptHandler'a sorunsuz akar.
     uvicorn_config = uvicorn.Config(
         app, 
         host="0.0.0.0", 
         port=settings.KNOWLEDGE_INDEXING_SERVICE_HTTP_PORT if is_indexing else settings.KNOWLEDGE_QUERY_SERVICE_HTTP_PORT,
-        log_config=log_config, 
+        log_config=None, # <--- ÇÖZÜM BURASI
         access_log=False
     )
     uvicorn_server = uvicorn.Server(uvicorn_config)
