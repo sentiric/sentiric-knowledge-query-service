@@ -3,15 +3,18 @@ import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
+
 class Settings(BaseSettings):
     """
     Servis yapılandırması.
     Production-Ready: Varsayılanlar güvenli ve hataya dayanıklı.
     """
+
     PROJECT_NAME: str = "Sentiric Knowledge Query Service"
-    SERVICE_VERSION: str = "0.4.5" # [ARCH-COMPLIANCE] Versiyon uyumlandırıldı
+    # [ARCH-COMPLIANCE] versionlar pyproectden alınabilir?
+    SERVICE_VERSION: str = "0.4.6"  
     API_V1_STR: str = "/api/v1"
-    
+
     ENV: str = "production"
     LOG_LEVEL: str = "INFO"
 
@@ -36,21 +39,22 @@ class Settings(BaseSettings):
     QDRANT_DB_COLLECTION_PREFIX: str = "sentiric_kb_"
 
     # AI Models
-    QDRANT_DB_EMBEDDING_MODEL_NAME: str = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+    QDRANT_DB_EMBEDDING_MODEL_NAME: str = (
+        "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+    )
     HF_HOME: str = "/app/model-cache"
-    
+
     # Tuning
     KNOWLEDGE_QUERY_DEFAULT_TOP_K: int = 5
     SCORE_THRESHOLD: float = 0.40
 
     model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding='utf-8',
-        extra='ignore'
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
+
 
 settings = Settings()
 
 # [ARCH-COMPLIANCE] Strict Tenant Validation
 if not settings.TENANT_ID and settings.ENV == "production":
-    pass # In context isolation this may be provided runtime, but logged as warning in main.
+    pass  # In context isolation this may be provided runtime, but logged as warning in main.
