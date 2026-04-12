@@ -6,7 +6,9 @@ import uuid
 from app.main import app
 
 try:
-    from app.main import serve_grpc  # Indexing Service
+    # [ARCH-COMPLIANCE FIX]: 'serve_grpc' adı Query Service tarafında start_grpc_server olarak değiştirilmişti.
+    # Indexing_service uyumluluğu için bunu doğru eşleştiriyoruz.
+    from app.main import start_grpc_server as serve_grpc
     from app.core.metrics import start_metrics_server
 
     is_indexing = True
@@ -24,16 +26,13 @@ async def main():
     )
     logger.info("Starting background services...", event_name="SYSTEM_INIT")
 
-    # [KRİTİK DÜZELTME]: Uvicorn'un dictConfig kullanarak çökmesini engelleriz.
-    # log_config=None diyerek, Uvicorn'un kendi logging ayarlarını ezmesini yasaklıyoruz.
-    # Böylece loglar, app/core/logging.py içindeki InterceptHandler'a sorunsuz akar.
     uvicorn_config = uvicorn.Config(
         app,
         host="0.0.0.0",
         port=settings.KNOWLEDGE_INDEXING_SERVICE_HTTP_PORT
         if is_indexing
         else settings.KNOWLEDGE_QUERY_SERVICE_HTTP_PORT,
-        log_config=None,  # <--- ÇÖZÜM BURASI
+        log_config=None,
         access_log=False,
     )
     uvicorn_server = uvicorn.Server(uvicorn_config)

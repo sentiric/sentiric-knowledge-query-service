@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "sentiric-knowledge-query-service"
-version = "0.4.6"
+version = "0.4.9"
 description = "Retrieval Augmented Generation (RAG) Query Service for vector database lookups (Qdrant)."
 authors = ["Sentiric Team <dev@sentiric.ai>"]
 license = "Apache-2.0"

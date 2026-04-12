@@ -23,7 +23,6 @@ class RAGEngine:
 
             device = "cuda" if torch.cuda.is_available() else "cpu"
 
-            # [ARCH-COMPLIANCE FIX]: Ruff linter hatası f-string takısı kaldırıldı
             logger.info(
                 "Model Ana Thread üzerinde yükleniyor...",
                 event_name="MODEL_LOADING_SYNC",
@@ -37,7 +36,6 @@ class RAGEngine:
                 device=device,
             )
 
-            # [ARCH-COMPLIANCE FIX]: Ruff linter hatası f-string takısı kaldırıldı
             logger.info(
                 "Qdrant'a bağlanılıyor...",
                 event_name="DB_CONNECTING",
@@ -46,6 +44,10 @@ class RAGEngine:
             self.qdrant = AsyncQdrantClient(
                 url=settings.QDRANT_HTTP_URL, api_key=settings.QDRANT_API_KEY
             )
+
+            # [ARCH-COMPLIANCE FIX]: Mypy Type Safety
+            # None kontrolü yapılarak type checking geçirildi.
+            assert self.qdrant is not None
 
             colls = await asyncio.wait_for(self.qdrant.get_collections(), timeout=10.0)
             logger.info(
@@ -80,7 +82,7 @@ class RAGEngine:
         logger.info("RAG Engine: Kapatıldı.", event_name="RAG_ENGINE_STOPPED")
 
     async def check_health(self) -> bool:
-        if not self._ready or not self.model:
+        if not self._ready or not self.model or not self.qdrant:
             return False
         try:
             await asyncio.wait_for(self.qdrant.get_collections(), timeout=5.0)
@@ -91,13 +93,13 @@ class RAGEngine:
     async def search(
         self, tenant_id: str, query_text: str, top_k: int = 5
     ) -> List[QueryResult]:
-        if not self._ready:
-            raise RuntimeError("Engine is not ready")
+
+        # [ARCH-COMPLIANCE FIX]: Mypy 'Optional' uyarısını engellemek için güvenlik assertion'ı
+        if not self._ready or not self.model or not self.qdrant:
+            raise RuntimeError("Engine is not ready or dependencies are None")
 
         collection_name = f"{settings.QDRANT_DB_COLLECTION_PREFIX}{tenant_id}"
 
-        # [ARCH-COMPLIANCE FIX]: PyTorch OOM engellemek için asyncio.to_thread kaldırıldı!
-        # Doğrudan senkron olarak çalışacak.
         query_vector = self.model.encode(query_text)
         query_vector_list = query_vector.tolist()
 

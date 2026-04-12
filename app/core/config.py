@@ -11,8 +11,8 @@ class Settings(BaseSettings):
     """
 
     PROJECT_NAME: str = "Sentiric Knowledge Query Service"
-    # [ARCH-COMPLIANCE] versionlar pyproectden alınabilir?
-    SERVICE_VERSION: str = "0.4.6"  
+    # [ARCH-COMPLIANCE] versionlar pyproject.toml'den alınabilir?
+    SERVICE_VERSION: str = "0.4.9"
     API_V1_STR: str = "/api/v1"
 
     ENV: str = "production"

@@ -6,6 +6,8 @@ import structlog
 import uuid
 from pathlib import Path
 from contextlib import asynccontextmanager
+from typing import Optional
+
 from fastapi import FastAPI, HTTPException, status, Response, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -22,7 +24,10 @@ from sentiric.knowledge.v1 import query_pb2_grpc
 
 setup_logging()
 logger = structlog.get_logger()
-grpc_server: grpc.aio.Server = None
+
+# Global referanslar
+grpc_server: Optional[grpc.aio.Server] = None
+grpc_task: Optional[asyncio.Task] = None
 
 
 async def start_grpc_server():
@@ -64,45 +69,53 @@ async def start_grpc_server():
                 root_certificates=root_ca,
                 require_client_auth=(root_ca is not None),
             )
-            grpc_server.add_secure_port(listen_addr, creds)
+
+            if grpc_server:
+                grpc_server.add_secure_port(listen_addr, creds)
         except Exception as e:
             if settings.ENV == "production":
                 logger.fatal(
                     f"Certificate load error. Insecure mode forbidden in production. Error: {e}",
                     event_name="MTLS_CONFIG_ERROR",
                 )
-                sys.exit(1)  # [ARCH-COMPLIANCE] Crash instead of silent degradation
+                sys.exit(1)
             else:
                 logger.error(
                     "Certificate load error. Reverting to insecure mode.",
                     event_name="MTLS_FALLBACK",
                     error=str(e),
                 )
-                grpc_server.add_insecure_port(listen_addr)
+                if grpc_server:
+                    grpc_server.add_insecure_port(listen_addr)
     else:
         if settings.ENV == "production":
             logger.fatal(
                 "Certificates missing! mTLS is MANDATORY in production.",
                 event_name="MTLS_MISSING_FATAL",
             )
-            sys.exit(1)  # [ARCH-COMPLIANCE]
+            sys.exit(1)
         else:
             logger.warning(
                 "Certificates missing. Starting in INSECURE mode.",
                 event_name="GRPC_INSECURE_START",
             )
-            grpc_server.add_insecure_port(listen_addr)
+            if grpc_server:
+                grpc_server.add_insecure_port(listen_addr)
 
     logger.info(
         f"gRPC Server listening on: {listen_addr}", event_name="GRPC_SERVER_STARTED"
     )
-    await grpc_server.start()
+
+    if grpc_server:
+        await grpc_server.start()
+        await grpc_server.wait_for_termination()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global grpc_task
     clear_contextvars()
-    # [ARCH-COMPLIANCE] Explicit span_id allocation for system initialization
+
     structlog.contextvars.bind_contextvars(
         trace_id=str(uuid.uuid4()), span_id=str(uuid.uuid4())
     )
@@ -115,19 +128,29 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(metrics.start_metrics_server())
     await engine.initialize()
-    asyncio.create_task(start_grpc_server())
+
+    grpc_task = asyncio.create_task(start_grpc_server())
 
     yield
 
     logger.info("Service Shutting Down", event_name="SERVICE_STOPPED")
+
+    if grpc_task:
+        grpc_task.cancel()
+
     if grpc_server:
         await grpc_server.stop(grace=5)
+
     await engine.shutdown()
     clear_contextvars()
 
 
 app = FastAPI(
-    title=settings.PROJECT_NAME, version=settings.SERVICE_VERSION, lifespan=lifespan
+    title=settings.PROJECT_NAME,
+    version=settings.SERVICE_VERSION,
+    lifespan=lifespan,
+    docs_url="/docs" if settings.ENV != "production" else None,
+    redoc_url=None,
 )
 
 
