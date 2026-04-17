@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "sentiric-knowledge-query-service"
-version = "0.4.10"
+version = "0.4.11"
 description = "Retrieval Augmented Generation (RAG) Query Service for vector database lookups (Qdrant)."
 authors = ["Sentiric Team <dev@sentiric.ai>"]
 license = "Apache-2.0"
@@ -23,7 +23,7 @@ grpcio-tools = "^1.68.0"
 grpcio-health-checking = "^1.68.0"
 prometheus-client = "^0.21.0"
 protobuf = "^5.29.0"
-sentiric-contracts-py = { git = "https://github.com/sentiric/sentiric-contracts.git", tag = "v1.13.6" }
+sentiric-contracts-py = { git = "https://github.com/sentiric/sentiric-contracts.git", tag = "v1.22.0" }
 
 [[tool.poetry.source]]
 name = "pytorch"
