@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, status, Response, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
@@ -152,6 +153,19 @@ app = FastAPI(
     docs_url="/docs" if settings.ENV != "production" else None,
     redoc_url=None,
 )
+
+# =====================================================================
+# [ARCH-COMPLIANCE FIX]: Web/Stream SDK'ların API'ye erişebilmesi için
+# Evrensel CORS Middleware'i eklendi.
+# =====================================================================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Geliştirme ve public CDN için tüm originlere izin ver
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+# =====================================================================
 
 
 @app.middleware("http")
