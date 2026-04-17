@@ -18,57 +18,72 @@ class RAGEngine:
         self.qdrant: Optional[AsyncQdrantClient] = None
         self._ready = False
 
+    def _load_model_sync(self):
+        """Modeli senkron olarak yükler (to_thread ile çağrılacak)"""
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(
+            "Model arka planda yükleniyor...",
+            event_name="MODEL_LOADING_BG",
+            model=settings.QDRANT_DB_EMBEDDING_MODEL_NAME,
+            device=device,
+        )
+        return SentenceTransformer(
+            settings.QDRANT_DB_EMBEDDING_MODEL_NAME,
+            cache_folder=settings.HF_HOME,
+            device=device,
+        )
+
     async def initialize(self):
+        logger.info("RAG Engine: Başlatılıyor...", event_name="RAG_ENGINE_START")
+
+        # [ARCH-COMPLIANCE FIX]: Asla Event Loop'u bloklama!
+        # Modeli ayrı bir OS Thread üzerinde yükle.
         try:
-            logger.info("RAG Engine: Başlatılıyor...", event_name="RAG_ENGINE_START")
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-
-            logger.info(
-                "Model Ana Thread üzerinde yükleniyor...",
-                event_name="MODEL_LOADING_SYNC",
-                model=settings.QDRANT_DB_EMBEDDING_MODEL_NAME,
-                device=device,
-            )
-
-            self.model = SentenceTransformer(
-                settings.QDRANT_DB_EMBEDDING_MODEL_NAME,
-                cache_folder=settings.HF_HOME,
-                device=device,
-            )
-
-            logger.info(
-                "Qdrant'a bağlanılıyor...",
-                event_name="DB_CONNECTING",
-                url=settings.QDRANT_HTTP_URL,
-            )
-            self.qdrant = AsyncQdrantClient(
-                url=settings.QDRANT_HTTP_URL, api_key=settings.QDRANT_API_KEY
-            )
-
-            assert self.qdrant is not None
-
-            colls = await asyncio.wait_for(self.qdrant.get_collections(), timeout=10.0)
-            logger.info(
-                "Qdrant bağlantısı başarılı.",
-                event_name="DB_CONNECTED",
-                collections_count=len(colls.collections),
-            )
-
-            self._ready = True
-            logger.info("RAG Engine: Hazır.", event_name="RAG_ENGINE_READY")
-        except asyncio.TimeoutError:
-            self._ready = False
-            logger.error("Qdrant connection timed out.", event_name="DB_TIMEOUT")
-            raise
+            self.model = await asyncio.to_thread(self._load_model_sync)
+            logger.info("Model başarıyla yüklendi.", event_name="MODEL_LOADED")
         except Exception as e:
-            self._ready = False
             logger.critical(
-                "RAG Engine başlatılamadı!",
-                event_name="RAG_ENGINE_FAIL",
-                error=str(e),
-                exc_info=True,
+                "Model yüklenemedi!", event_name="MODEL_LOAD_FAIL", error=str(e)
             )
             raise e
+
+        # Qdrant İstemcisini Oluştur (Bu işlem ağa gitmez, sadece objeyi yaratır)
+        self.qdrant = AsyncQdrantClient(
+            url=settings.QDRANT_HTTP_URL, api_key=settings.QDRANT_API_KEY
+        )
+
+        # [ARCH-COMPLIANCE FIX]: Zero-Dependency Boot (Ghost Mode)
+        # Qdrant'a bağlanmayı dene, DNS yoksa çökme, arka planda tekrar dene.
+        try:
+            await asyncio.wait_for(self.qdrant.get_collections(), timeout=3.0)
+            self._ready = True
+            logger.info("Qdrant bağlantısı başarılı.", event_name="DB_CONNECTED")
+        except Exception as e:
+            self._ready = False
+            logger.warning(
+                "Qdrant ağına ulaşılamadı (DNS/Timeout). Servis Ghost Mode'da ayağa kalkıyor. Arka planda tekrar denenecek.",
+                event_name="DB_CONNECT_FAIL_GHOST_MODE",
+                error=str(e),
+            )
+            # Ana thread'i bloklamadan arka planda bağlanmaya çalış
+            asyncio.create_task(self._background_reconnect())
+
+    async def _background_reconnect(self):
+        """Qdrant ayağa kalkana kadar sessizce bağlanmayı dener (Auto-Healing)"""
+        backoff = 5
+        while not self._ready:
+            await asyncio.sleep(backoff)
+            try:
+                if self.qdrant:
+                    await asyncio.wait_for(self.qdrant.get_collections(), timeout=3.0)
+                    self._ready = True
+                    logger.info(
+                        "Qdrant is back online. Syncing restored.",
+                        event_name="DB_RECONNECTED",
+                    )
+                    break
+            except Exception:
+                backoff = min(backoff * 2, 60)  # Exponential backoff (max 60s)
 
     async def shutdown(self):
         if self.qdrant:
@@ -79,28 +94,24 @@ class RAGEngine:
     async def check_health(self) -> bool:
         if not self._ready or not self.model or not self.qdrant:
             return False
-        try:
-            await asyncio.wait_for(self.qdrant.get_collections(), timeout=5.0)
-            return True
-        except Exception:
-            return False
+        return True
 
     async def search(
         self, tenant_id: str, query_text: str, top_k: int = 5
     ) -> List[QueryResult]:
         if not self._ready or not self.model or not self.qdrant:
-            raise RuntimeError("Engine is not ready or dependencies are None")
+            logger.warning(
+                "Search rejected: Engine is in Ghost Mode (Qdrant offline)",
+                event_name="RAG_SEARCH_REJECTED",
+            )
+            raise RuntimeError("Engine is currently in Ghost Mode (Qdrant offline)")
 
         collection_name = f"{settings.QDRANT_DB_COLLECTION_PREFIX}{tenant_id}"
-
-        # [ARCH-COMPLIANCE FIX]: Qdrant'ta hem statik dosyaları hem de Crystalline
-        # zihin haritasını (Kalıcı Hafıza) aramak için koleksiyon adını belirle
         mem_collection = "sentiric_user_memories"
 
         query_vector = self.model.encode(query_text).tolist()
 
         try:
-            # 1. Kurumsal PDF/Web RAG Araması
             search_task = self.qdrant.search(
                 collection_name=collection_name,
                 query_vector=query_vector,
@@ -109,20 +120,17 @@ class RAGEngine:
                 with_payload=True,
             )
 
-            # 2. Crystalline Kişisel Hafıza (Cognitive Memory) Araması
             mem_search_task = self.qdrant.search(
                 collection_name=mem_collection,
                 query_vector=query_vector,
                 limit=top_k,
-                score_threshold=0.50,  # Hafızada eşik daha düşük olabilir
+                score_threshold=0.50,
                 with_payload=True,
-                # Not: Biyometrik bio_id filtresi eklenebilir, şimdilik tenant_id filtresi uygulanıyor.
                 query_filter={
                     "must": [{"key": "tenant_id", "match": {"value": tenant_id}}]
                 },
             )
 
-            # İki koleksiyonu paralel ara (Zero-Latency kuralı)
             search_result, mem_result = await asyncio.wait_for(
                 asyncio.gather(search_task, mem_search_task, return_exceptions=True),
                 timeout=5.0,
@@ -142,37 +150,29 @@ class RAGEngine:
 
         results = []
 
-        # --- A. KURUMSAL RAG SONUÇLARI (Standard) ---
+        # --- A. KURUMSAL RAG SONUÇLARI ---
         if isinstance(search_result, list):
             for hit in search_result:
                 payload = hit.payload or {}
                 results.append(
                     QueryResult(
                         content=payload.get("content", ""),
-                        score=hit.score,  # Sadece Vektör Benzerliği
+                        score=hit.score,
                         source=payload.get("source_uri", "knowledge_base"),
                         metadata={"type": "static_document"},
                     )
                 )
 
-        # --- B. CRYSTALLINE BİLİŞSEL HAFIZA SONUÇLARI (Hybrid Scoring v4.0) ---
+        # --- B. CRYSTALLINE BİLİŞSEL HAFIZA SONUÇLARI ---
         if isinstance(mem_result, list):
             for hit in mem_result:
                 payload = hit.payload or {}
-
-                # Master Spec v4.0 Hibrit Skorlama:
-                # Final_Score = (Vector_Sim * 0.6) + (Importance * 0.4)
                 fact_data = payload.get("fact", {})
-                importance = (
-                    float(fact_data.get("importance", 3)) / 5.0
-                )  # 0.0 - 1.0 arası normalize
-
+                importance = float(fact_data.get("importance", 3)) / 5.0
                 final_score = (hit.score * 0.6) + (importance * 0.4)
 
                 category = fact_data.get("category", "BİLGİ").upper()
                 summary = fact_data.get("summary", "")
-
-                # LLM'in anlaması için içeriği formatla
                 formatted_content = f"[{category}]: {summary}"
 
                 results.append(
@@ -187,11 +187,7 @@ class RAGEngine:
                     )
                 )
 
-        # 3. Re-Rank (Yeniden Sıralama)
-        # Kurumsal belgeler ve Kişisel anıları Harmanla ve en yüksek skora göre diz
         results.sort(key=lambda x: x.score, reverse=True)
-
-        # En iyi top_k kadarını dön
         final_results = results[:top_k]
 
         logger.info(
